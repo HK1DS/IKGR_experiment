@@ -1,0 +1,42 @@
+# User-editable configuration in one place.
+
+paths:
+  input_csv: data/profiles_sample.csv        # required columns: user_id,user_profile,item_id,item_profile
+  workdir: run/                       # will be created
+  step1_output: run/step1_intents.csv
+  step2_output: run/step2_related_intents.csv
+  kg_triples: run/kg_triples.txt      # recbole KG file: head  relation  tail
+  inter_file: data/interactions_sample.csv    # recbole inter file: user_id,item_id,rating
+  recbole_dump: run/recbole/
+  user_bank_pt: run/user_bank.pt      # needs to be generated in step2 and converted in step3.
+  item_bank_pt: run/item_bank.pt
+
+
+llm:
+  # Gemini API (Generative Language API)
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  api_key: "${GEMINI_API_KEY}"
+  model: "gemini-3-flash-preview"
+  provider: gemini
+  temperature: 0.2
+  top_p: 0.95
+  max_tokens: 2048
+
+rag:
+  encoder: "sentence-transformers/all-mpnet-base-v2"
+  annoy_trees: 50
+  knn_k: 100
+  encoding_npy: run/intents_emb.npy
+  annoy_index: run/intents.ann
+  vocab_json: run/intent_vocab.json
+
+recbole:
+  model: "IKGR"
+  dataset: "ikgr-custom"            # Modify to your processed datasets here.
+  topk: [10, 30]
+  metrics: ["Recall", "MRR", "NDCG", "Hit", "Precision"]
+  epochs: 20
+  lambda_mix: 0.1                   # lambda in Eq. (11)
+  embedding_size: 512
+  gcn_layers: 1
+  dropout: 0.1

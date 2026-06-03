@@ -1,0 +1,12 @@
+(Reasonably replace this prompt in accordance with your dataset specifics) You are given a profile text and a fixed vocabulary of candidate intents (Available Options). 
+Select ALL options that are semantically related to the profile, including closely-related but not explicitly mentioned ones.
+- You MUST choose only from Available Options.
+- Return ONLY a Python list of strings.
+
+### Profile:
+{PROFILE}
+
+### Available Options:
+{OPTIONS}
+
+### Answer:
