@@ -209,4 +209,3 @@ __marimo__/
 # Dataset and Run output files
 data/
 run/
-*.gz
