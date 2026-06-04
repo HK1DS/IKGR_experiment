@@ -1,12 +1,13 @@
-(Reasonably replace this prompt in accordance with your dataset specifics) You are given a profile text and a fixed vocabulary of candidate intents (Available Options). 
-Select ALL options that are semantically related to the profile, including closely-related but not explicitly mentioned ones.
-- You MUST choose only from Available Options.
-- Return ONLY a Python list of strings.
+You are given a profile text and a list of candidate intents with their indices.
+Select ALL candidate intents that are semantically related to the profile, including closely-related but not explicitly mentioned ones.
+
+Return ONLY a JSON list of selected indices (integers), like: [0, 4, 12]
+Do NOT include markdown formatting, code blocks, or any explanation in your answer.
 
 ### Profile:
 {PROFILE}
 
-### Available Options:
+### Available Options (format: INDEX: INTENT):
 {OPTIONS}
 
 ### Answer:

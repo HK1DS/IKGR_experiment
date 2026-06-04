@@ -8,11 +8,50 @@ from tqdm import tqdm
 from ikgr_core.utils import load_json, save_json, read_csv, write_csv, ensure_dir
 from ikgr_core.rag import IntentEncoderIndex, knn_strings
 from ikgr_core.llm_client import LocalLLM
+import re, ast, json
 
 def _safe_eval_list(s):
-    if isinstance(s, str) and s.strip():
-        try: return list(eval(s))
-        except: return []
+    if not isinstance(s, str):
+        return []
+    s = s.strip()
+    if not s:
+        return []
+    
+    # Strip markdown block quotes
+    s = re.sub(r"^```(?:python|json)?", "", s, flags=re.MULTILINE)
+    s = re.sub(r"```$", "", s, flags=re.MULTILINE)
+    s = s.strip()
+    
+    # Extract everything inside [ and ]
+    match = re.search(r"\[.*\]", s, re.DOTALL)
+    if match:
+        s_content = match.group(0)
+    else:
+        s_content = s
+        
+    try:
+        val = ast.literal_eval(s_content)
+        if isinstance(val, list):
+            return val
+    except:
+        pass
+        
+    try:
+        val = json.loads(s_content)
+        if isinstance(val, list):
+            return val
+    except:
+        pass
+        
+    # Regex fallback for integers or single/double quoted items
+    try:
+        # Check if they are indices (integers)
+        nums = [int(x) for x in re.findall(r"\d+", s_content)]
+        if nums:
+            return nums
+    except:
+        pass
+        
     return []
 
 def main():
@@ -25,14 +64,18 @@ def main():
     df = read_csv(paths["step1_output"]).fillna("")
 
     # 1) Freeze vocabulary from step1 exact intents
+    def _parse_exact_list(s):
+        val = _safe_eval_list(s)
+        return [str(x) for x in val if isinstance(x, str)]
+
     vocab = set()
     for col in ["user_intents_exact", "item_intents_exact"]:
         for v in df[col].dropna():
-            vocab.update(_safe_eval_list(v))
+            vocab.update(_parse_exact_list(v))
     vocab = sorted(list(vocab))
     save_json(vocab, rag_cfg["vocab_json"])
 
-    # 2) Encode vocab + build Annoy
+    # 2) Encode vocab + build Index
     enc = IntentEncoderIndex(rag_cfg["encoder"])
     emb = enc.encode(vocab)
     np.save(rag_cfg["encoding_npy"], emb)
@@ -40,10 +83,10 @@ def main():
 
     ann = enc.load_ann(emb.shape[1], rag_cfg["annoy_index"])
     llm = LocalLLM(**llm_cfg)
-    sys_prompt = "You are a helpful assistant that returns ONLY Python lists."
+    sys_prompt = "You are a helpful assistant that returns ONLY JSON lists of integers."
 
     # 3) For each row, expand related intents for user & item via RAG + LLM selection
-    import os, json, time, requests
+    import os, time, requests
     cache_path = os.path.join(paths["workdir"], "step2_cache.json")
     if os.path.exists(cache_path):
         with open(cache_path, "r", encoding="utf-8") as f:
@@ -83,11 +126,9 @@ def main():
 
     for _, r in tqdm(df.iterrows(), total=len(df)):
         u_prof, i_prof = r.get("user_profile", ""), r.get("item_profile", "")
-        u_exact = _safe_eval_list(r.get("user_intents_exact", "[]"))
-        i_exact = _safe_eval_list(r.get("item_intents_exact", "[]"))
+        u_exact = _parse_exact_list(r.get("user_intents_exact", "[]"))
+        i_exact = _parse_exact_list(r.get("item_intents_exact", "[]"))
 
-        # RAG options
-        # query text is the raw profile; embed then KNN over frozen vocab
         # user
         if u_prof:
             if u_prof in cache["user"]:
@@ -95,11 +136,23 @@ def main():
             else:
                 q_emb = enc.encode([u_prof])[0]
                 options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
-                options = [o for o in options if o not in u_exact]
-                prompt = p_rel.replace("{PROFILE}", u_prof).replace("{OPTIONS}", str(options))
+                options_filtered = [o for o in options if o not in u_exact]
+                
+                options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
+                prompt = p_rel.replace("{PROFILE}", u_prof).replace("{OPTIONS}", options_text)
+                
                 ans = chat_with_retry(sys_prompt, prompt)
-                u_rel = _safe_eval_list(ans)
-                u_rel = [x for x in u_rel if x in options]  # hard filter
+                selected_indices = _safe_eval_list(ans)
+                
+                u_rel = []
+                for idx in selected_indices:
+                    try:
+                        idx_int = int(idx)
+                        if 0 <= idx_int < len(options_filtered):
+                            u_rel.append(options_filtered[idx_int])
+                    except:
+                        pass
+                
                 cache["user"][u_prof] = u_rel
                 save_counter += 1
         else:
@@ -112,11 +165,23 @@ def main():
             else:
                 q_emb = enc.encode([i_prof])[0]
                 options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
-                options = [o for o in options if o not in i_exact]
-                prompt = p_rel.replace("{PROFILE}", i_prof).replace("{OPTIONS}", str(options))
+                options_filtered = [o for o in options if o not in i_exact]
+                
+                options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
+                prompt = p_rel.replace("{PROFILE}", i_prof).replace("{OPTIONS}", options_text)
+                
                 ans = chat_with_retry(sys_prompt, prompt)
-                i_rel = _safe_eval_list(ans)
-                i_rel = [x for x in i_rel if x in options]
+                selected_indices = _safe_eval_list(ans)
+                
+                i_rel = []
+                for idx in selected_indices:
+                    try:
+                        idx_int = int(idx)
+                        if 0 <= idx_int < len(options_filtered):
+                            i_rel.append(options_filtered[idx_int])
+                    except:
+                        pass
+                
                 cache["item"][i_prof] = i_rel
                 save_counter += 1
         else:
