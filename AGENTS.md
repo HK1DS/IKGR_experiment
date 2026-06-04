@@ -92,7 +92,20 @@ df_prof_sample.to_csv("data/profiles_sample.csv", index=False)
     ```
 
 ### Step 6. LLM API 변경 및 재시도 (중요 💡)
-가성비가 좋은 Qwen(Alibaba)이나 DeepSeek, 혹은 유료 결제가 연동된 OpenAI/Gemini API로 전환하여 `step1`을 이어서 실행합니다.
+가성비가 좋은 Qwen(Alibaba)이나 DeepSeek, 혹은 제공받은 Luxia Cloud API나 유료 OpenAI/Gemini API로 전환하여 `step1`을 이어서 실행합니다.
+
+* **Luxia Cloud API (OpenAI GPT-4o-mini Bridge)로 변경하는 경우**:
+  `config.yaml`의 `llm` 설정을 다음과 같이 변경합니다. (.env 파일에 `LUXIA_API_KEY` 입력 필수)
+  ```yaml
+  llm:
+    base_url: https://bridge.luxiacloud.com/llm/openai/chat/completions/gpt-4o-mini
+    api_key: "${LUXIA_API_KEY}"
+    model: "llm"
+    provider: luxia
+    temperature: 0.2
+    top_p: 0.95
+    max_tokens: 2048
+  ```
 
 * **OpenAI 호환 API (Qwen, DeepSeek 등)로 변경하는 경우**:
   `config.yaml`의 `llm` 설정을 다음과 같이 변경합니다.

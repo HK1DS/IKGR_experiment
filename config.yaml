@@ -13,11 +13,11 @@ paths:
 
 
 llm:
-  # Gemini API (Generative Language API)
-  base_url: https://generativelanguage.googleapis.com/v1beta
-  api_key: "${GEMINI_API_KEY}"
-  model: "gemini-3-flash-preview"
-  provider: gemini
+  # Luxia Cloud API (OpenAI GPT-4o-mini Bridge)
+  base_url: https://bridge.luxiacloud.com/llm/openai/chat/completions/gpt-4o-mini
+  api_key: "${LUXIA_API_KEY}"
+  model: "llm"
+  provider: luxia
   temperature: 0.2
   top_p: 0.95
   max_tokens: 2048

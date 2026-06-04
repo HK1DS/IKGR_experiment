@@ -31,6 +31,8 @@ class LocalLLM:
     def _infer_provider(base_url: str) -> str:
         if "generativelanguage.googleapis.com" in base_url:
             return "gemini"
+        elif "luxiacloud.com" in base_url:
+            return "luxia"
         return "openai"
 
     @classmethod
@@ -61,9 +63,14 @@ class LocalLLM:
         if match:
             env_var = match.group(1)
 
-        if not key or key.lower() in {"dummy-api-key", "your_gemini_api_key", "your_openai_api_key"}:
+        if not key or key.lower() in {"dummy-api-key", "your_gemini_api_key", "your_openai_api_key", "your_luxia_api_key"}:
             if not env_var:
-                env_var = "GEMINI_API_KEY" if provider == "gemini" else "OPENAI_API_KEY"
+                if provider == "gemini":
+                    env_var = "GEMINI_API_KEY"
+                elif provider == "luxia":
+                    env_var = "LUXIA_API_KEY"
+                else:
+                    env_var = "OPENAI_API_KEY"
 
         if env_var:
             value = os.environ.get(env_var)
@@ -78,6 +85,8 @@ class LocalLLM:
     def chat(self, system_prompt: str, user_prompt: str) -> str:
         if self.provider == "gemini":
             return self._chat_gemini(system_prompt, user_prompt)
+        elif self.provider == "luxia":
+            return self._chat_luxia(system_prompt, user_prompt)
         return self._chat_openai(system_prompt, user_prompt)
 
     def _chat_openai(self, system_prompt: str, user_prompt: str) -> str:
@@ -85,6 +94,29 @@ class LocalLLM:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload: Dict = {
             "model": self.model,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_tokens": self.max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        r = requests.post(url, json=payload, headers=headers, timeout=self.timeout)
+        r.raise_for_status()
+        data = r.json()
+        return data["choices"][0]["message"]["content"]
+
+    def _chat_luxia(self, system_prompt: str, user_prompt: str) -> str:
+        url = self.base_url
+        if not url.endswith("/create"):
+            url = f"{url}/create"
+        headers = {
+            "apikey": self.api_key,
+            "Content-Type": "application/json"
+        }
+        payload: Dict = {
+            "model": "llm",
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_tokens": self.max_tokens,
