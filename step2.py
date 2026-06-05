@@ -120,84 +120,90 @@ def main():
                 delay = min(delay * 2, 60)
         return llm.chat(sys_prompt, prompt).strip()
 
-    rel_user, rel_item = [], []
-    p_rel = open("prompts/step2_related.txt", "r", encoding="utf-8").read()
+    unique_users = df[df["user_profile"] != ""]["user_profile"].unique()
+    unique_items = df[df["item_profile"] != ""]["item_profile"].unique()
+
+    print(f"Unique Users for RAG: {len(unique_users)}, Unique Items for RAG: {len(unique_items)}")
+
+    # Create mapping table for exact intents by profile to construct options_filtered
+    user_exact_map = {}
+    item_exact_map = {}
+    for _, r in df.iterrows():
+        u_prof, i_prof = str(r.get("user_profile", "")).strip(), str(r.get("item_profile", "")).strip()
+        if u_prof and u_prof not in user_exact_map:
+            user_exact_map[u_prof] = _parse_exact_list(r.get("user_intents_exact", "[]"))
+        if i_prof and i_prof not in item_exact_map:
+            item_exact_map[i_prof] = _parse_exact_list(r.get("item_intents_exact", "[]"))
+
     save_counter = 0
 
-    for _, r in tqdm(df.iterrows(), total=len(df)):
-        u_prof, i_prof = r.get("user_profile", ""), r.get("item_profile", "")
-        u_exact = _parse_exact_list(r.get("user_intents_exact", "[]"))
-        i_exact = _parse_exact_list(r.get("item_intents_exact", "[]"))
-
-        # user
-        if u_prof:
-            if u_prof in cache["user"]:
-                u_rel = cache["user"][u_prof]
-            else:
-                q_emb = enc.encode([u_prof])[0]
-                options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
-                options_filtered = [o for o in options if o not in u_exact]
-                
-                options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
-                prompt = p_rel.replace("{PROFILE}", u_prof).replace("{OPTIONS}", options_text)
-                
-                ans = chat_with_retry(sys_prompt, prompt)
-                selected_indices = _safe_eval_list(ans)
-                
-                u_rel = []
-                for idx in selected_indices:
-                    try:
-                        idx_int = int(idx)
-                        if 0 <= idx_int < len(options_filtered):
-                            u_rel.append(options_filtered[idx_int])
-                    except:
-                        pass
-                
-                cache["user"][u_prof] = u_rel
-                save_counter += 1
-        else:
+    # user
+    for u_prof in tqdm(unique_users, desc="Expanding User Intents"):
+        u_prof = str(u_prof).strip()
+        if u_prof not in cache["user"]:
+            u_exact = user_exact_map.get(u_prof, [])
+            q_emb = enc.encode([u_prof])[0]
+            options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
+            options_filtered = [o for o in options if o not in u_exact]
+            
+            options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
+            prompt = p_rel.replace("{PROFILE}", u_prof).replace("{OPTIONS}", options_text)
+            
+            ans = chat_with_retry(sys_prompt, prompt)
+            selected_indices = _safe_eval_list(ans)
+            
             u_rel = []
+            for idx in selected_indices:
+                try:
+                    idx_int = int(idx)
+                    if 0 <= idx_int < len(options_filtered):
+                        u_rel.append(options_filtered[idx_int])
+                except:
+                    pass
+            
+            cache["user"][u_prof] = u_rel
+            save_counter += 1
+            if save_counter >= 20:
+                save_cache()
+                save_counter = 0
 
-        # item
-        if i_prof:
-            if i_prof in cache["item"]:
-                i_rel = cache["item"][i_prof]
-            else:
-                q_emb = enc.encode([i_prof])[0]
-                options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
-                options_filtered = [o for o in options if o not in i_exact]
-                
-                options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
-                prompt = p_rel.replace("{PROFILE}", i_prof).replace("{OPTIONS}", options_text)
-                
-                ans = chat_with_retry(sys_prompt, prompt)
-                selected_indices = _safe_eval_list(ans)
-                
-                i_rel = []
-                for idx in selected_indices:
-                    try:
-                        idx_int = int(idx)
-                        if 0 <= idx_int < len(options_filtered):
-                            i_rel.append(options_filtered[idx_int])
-                    except:
-                        pass
-                
-                cache["item"][i_prof] = i_rel
-                save_counter += 1
-        else:
+    # item
+    for i_prof in tqdm(unique_items, desc="Expanding Item Intents"):
+        i_prof = str(i_prof).strip()
+        if i_prof not in cache["item"]:
+            i_exact = item_exact_map.get(i_prof, [])
+            q_emb = enc.encode([i_prof])[0]
+            options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
+            options_filtered = [o for o in options if o not in i_exact]
+            
+            options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
+            prompt = p_rel.replace("{PROFILE}", i_prof).replace("{OPTIONS}", options_text)
+            
+            ans = chat_with_retry(sys_prompt, prompt)
+            selected_indices = _safe_eval_list(ans)
+            
             i_rel = []
-
-        if save_counter >= 20:
-            save_cache()
-            save_counter = 0
-
-        rel_user.append(str(u_rel))
-        rel_item.append(str(i_rel))
+            for idx in selected_indices:
+                try:
+                    idx_int = int(idx)
+                    if 0 <= idx_int < len(options_filtered):
+                        i_rel.append(options_filtered[idx_int])
+                except:
+                    pass
+            
+            cache["item"][i_prof] = i_rel
+            save_counter += 1
+            if save_counter >= 20:
+                save_cache()
+                save_counter = 0
 
     save_cache()
 
-    df["user_intents_related"] = rel_user
-    df["item_intents_related"] = rel_item
+    # Fast pandas mapping to populate the dataframe
+    print("Mapping related intents back to main dataframe...")
+    df["user_intents_related"] = df["user_profile"].map(lambda x: str(cache["user"].get(str(x).strip(), [])))
+    df["item_intents_related"] = df["item_profile"].map(lambda x: str(cache["item"].get(str(x).strip(), [])))
+    
     write_csv(df, paths["step2_output"])
     print(f"[step2] saved: {paths['step2_output']}")
 

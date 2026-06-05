@@ -63,47 +63,44 @@ def main():
                 delay = min(delay * 2, 60)
         return llm.chat(sys_prompt, prompt).strip()
 
-    user_out, item_out = [], []
+    # Extract unique profiles
+    unique_users = df[df["user_profile"] != ""]["user_profile"].unique()
+    unique_items = df[df["item_profile"] != ""]["item_profile"].unique()
+
+    print(f"Unique Users: {len(unique_users)}, Unique Items: {len(unique_items)}")
+
     save_counter = 0
-    for _, r in tqdm(df.iterrows(), total=len(df)):
-        uprof = str(r.get("user_profile", "")).strip()
-        iprof = str(r.get("item_profile", "")).strip()
+    # Process unique user profiles
+    for uprof in tqdm(unique_users, desc="Extracting User Intents"):
+        uprof = str(uprof).strip()
+        if uprof not in cache["user"]:
+            up = p_user.replace("{PROFILE}", uprof)
+            u_ans = chat_with_retry(sys_prompt, up)
+            cache["user"][uprof] = u_ans if u_ans.startswith("[") else "[]"
+            save_counter += 1
+            if save_counter >= 20:
+                save_cache()
+                save_counter = 0
 
-        # user intents
-        if uprof:
-            if uprof in cache["user"]:
-                u_ans = cache["user"][uprof]
-            else:
-                up = p_user.replace("{PROFILE}", uprof)
-                u_ans = chat_with_retry(sys_prompt, up)
-                cache["user"][uprof] = u_ans
-                save_counter += 1
-        else:
-            u_ans = "[]"
-
-        # item intents
-        if iprof:
-            if iprof in cache["item"]:
-                i_ans = cache["item"][iprof]
-            else:
-                ip = p_item.replace("{PROFILE}", iprof)
-                i_ans = chat_with_retry(sys_prompt, ip)
-                cache["item"][iprof] = i_ans
-                save_counter += 1
-        else:
-            i_ans = "[]"
-
-        # Save cache every 20 additions
-        if save_counter >= 20:
-            save_cache()
-            save_counter = 0
-
-        user_out.append(u_ans if u_ans.startswith("[") else "[]")
-        item_out.append(i_ans if i_ans.startswith("[") else "[]")
+    # Process unique item profiles
+    for iprof in tqdm(unique_items, desc="Extracting Item Intents"):
+        iprof = str(iprof).strip()
+        if iprof not in cache["item"]:
+            ip = p_item.replace("{PROFILE}", iprof)
+            i_ans = chat_with_retry(sys_prompt, ip)
+            cache["item"][iprof] = i_ans if i_ans.startswith("[") else "[]"
+            save_counter += 1
+            if save_counter >= 20:
+                save_cache()
+                save_counter = 0
 
     save_cache()
-    df["user_intents_exact"] = user_out
-    df["item_intents_exact"] = item_out
+
+    # Fast pandas mapping to populate the dataframe
+    print("Mapping intents back to main dataframe...")
+    df["user_intents_exact"] = df["user_profile"].map(lambda x: cache["user"].get(str(x).strip(), "[]"))
+    df["item_intents_exact"] = df["item_profile"].map(lambda x: cache["item"].get(str(x).strip(), "[]"))
+    
     write_csv(df, out_csv)
     print(f"[step1] saved: {out_csv}")
 
