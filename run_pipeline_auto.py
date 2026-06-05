@@ -37,10 +37,10 @@ def main():
         "Iterative K-Core Filtering (k=100)"
     )
 
-    # 2. Sample 1000 users to limit LLM API cost
+    # 2. Sample 300 users to limit LLM API cost
     run_cmd(
-        [sys.executable, "sample_dataset.py", "--profiles_in", "data/k_core/profiles_k100.csv", "--interactions_in", "data/k_core/interactions_k100.csv", "--n_users", "1000", "--out_dir", "data/k_core_sampled"],
-        "Sampling 1000 users subset for cost defense"
+        [sys.executable, "sample_dataset.py", "--profiles_in", "data/k_core/profiles_k100.csv", "--interactions_in", "data/k_core/interactions_k100.csv", "--n_users", "300", "--out_dir", "data/k_core_sampled"],
+        "Sampling 300 users subset for cost defense"
     )
 
     # 3. Backup original samples
@@ -127,17 +127,17 @@ def main():
     # 14. Write Final Markdown Report
     report_content = f"""# IKGR Pipeline Auto-run Final Report (Option B: k=100 + Sampling)
 
-본 보고서는 사용자의 부재 상태에서 자동 마스터 스크립트(`run_pipeline_auto.py`)를 통해 **k=100 K-Core 필터링 및 1,000명 유저 샘플링** 조건하에 전체 파이프라인을 완전히 자동 구동한 결과 보고서입니다.
+본 보고서는 사용자의 부재 상태에서 자동 마스터 스크립트(`run_pipeline_auto.py`)를 통해 **k=100 K-Core 필터링 및 300명 유저 샘플링** 조건하에 전체 파이프라인을 완전히 자동 구동한 결과 보고서입니다.
 
 ---
 
 ## 📌 1. 데이터셋 처리 요약
 * **전체 원본 데이터**: Goodreads Children Genre (1,000만 Interactions)
 * **1차 압축 (k=100 K-Core)**: 11,073 Users, 6,857 Items, 2,489,355 Interactions
-* **2차 압축 (비용 제어용 1,000 유저 샘플링)**:
-  * **샘플링 사용자 수 (Users)**: 1,000명
-  * **연결된 아이템 수 (Items)**: 약 1,500~2,500개 범위 내외 (실제 매핑 결과 확인)
-  * **최종 상호작용 수 (Interactions)**: 약 10,000~20,000건 범위 내외
+* **2차 압축 (비용 제어용 300 유저 샘플링)**:
+  * **샘플링 사용자 수 (Users)**: 300명
+  * **연결된 아이템 수 (Items)**: 약 1,000개 미만
+  * **최종 상호작용 수 (Interactions)**: 약 5,000~10,000건 범위 내외
 
 ---
 
