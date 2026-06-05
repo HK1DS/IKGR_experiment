@@ -10,6 +10,10 @@ from ikgr_core.rag import IntentEncoderIndex, knn_strings
 from ikgr_core.llm_client import LocalLLM
 import re, ast, json
 
+def load_prompt(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
 def _safe_eval_list(s):
     if not isinstance(s, str):
         return []
@@ -61,6 +65,7 @@ def main():
     llm_cfg = cfg["llm"]
 
     ensure_dir(paths["workdir"])
+    p_rel = load_prompt("prompts/step2_related.txt")
     df = read_csv(paths["step1_output"]).fillna("")
 
     # 1) Freeze vocabulary from step1 exact intents

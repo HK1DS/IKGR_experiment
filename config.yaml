@@ -1,12 +1,12 @@
 # User-editable configuration in one place.
 
 paths:
-  input_csv: data/profiles_sample.csv        # required columns: user_id,user_profile,item_id,item_profile
+  input_csv: data/k_core/profiles_k100.csv    # required columns: user_id,user_profile,item_id,item_profile
   workdir: run/                       # will be created
   step1_output: run/step1_intents.csv
   step2_output: run/step2_related_intents.csv
   kg_triples: run/kg_triples.txt      # recbole KG file: head  relation  tail
-  inter_file: data/interactions_sample.csv    # recbole inter file: user_id,item_id,rating
+  inter_file: data/k_core/interactions_k100.csv    # recbole inter file: user_id,item_id,rating
   recbole_dump: run/recbole/
   user_bank_pt: run/user_bank.pt      # needs to be generated in step2 and converted in step3.
   item_bank_pt: run/item_bank.pt
