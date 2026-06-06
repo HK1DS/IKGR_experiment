@@ -2,6 +2,7 @@
 RAG expand related intents (from fixed intent vocab)
 '''
 
+import os
 import yaml, numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -9,6 +10,10 @@ from ikgr_core.utils import load_json, save_json, read_csv, write_csv, ensure_di
 from ikgr_core.rag import IntentEncoderIndex, knn_strings
 from ikgr_core.llm_client import LocalLLM
 import re, ast, json
+
+# Number of concurrent LLM requests for RAG intent expansion.
+# Override via env var IKGR_STEP2_WORKERS if the provider allows more throughput.
+MAX_WORKERS = int(os.environ.get("IKGR_STEP2_WORKERS", "8"))
 
 def load_prompt(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
@@ -101,8 +106,11 @@ def main():
         cache = {"user": {}, "item": {}}
 
     def save_cache():
-        with open(cache_path, "w", encoding="utf-8") as f:
+        # Atomic write to avoid corrupting the resumable cache on interrupt.
+        tmp = cache_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, cache_path)
 
     def chat_with_retry(sys_prompt, prompt, max_retries=10, initial_delay=5):
         delay = initial_delay
@@ -140,67 +148,71 @@ def main():
         if i_prof and i_prof not in item_exact_map:
             item_exact_map[i_prof] = _parse_exact_list(r.get("item_intents_exact", "[]"))
 
-    save_counter = 0
+    # ---- Build pending job list (skip cached + dedup within a kind) ----
+    exact_maps = {"user": user_exact_map, "item": item_exact_map}
+    jobs = []  # (kind, profile_key)
+    seen = {"user": set(), "item": set()}
+    for kind, profiles in (("user", unique_users), ("item", unique_items)):
+        for prof in profiles:
+            key = str(prof).strip()
+            if key and key not in cache[kind] and key not in seen[kind]:
+                seen[kind].add(key)
+                jobs.append((kind, key))
 
-    # user
-    for u_prof in tqdm(unique_users, desc="Expanding User Intents"):
-        u_prof = str(u_prof).strip()
-        if u_prof not in cache["user"]:
-            u_exact = user_exact_map.get(u_prof, [])
-            q_emb = enc.encode([u_prof])[0]
-            options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
-            options_filtered = [o for o in options if o not in u_exact]
-            
-            options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
-            prompt = p_rel.replace("{PROFILE}", u_prof).replace("{OPTIONS}", options_text)
-            
-            ans = chat_with_retry(sys_prompt, prompt)
-            selected_indices = _safe_eval_list(ans)
-            
-            u_rel = []
-            for idx in selected_indices:
-                try:
-                    idx_int = int(idx)
-                    if 0 <= idx_int < len(options_filtered):
-                        u_rel.append(options_filtered[idx_int])
-                except:
-                    pass
-            
-            cache["user"][u_prof] = u_rel
-            save_counter += 1
-            if save_counter >= 20:
-                save_cache()
-                save_counter = 0
+    print(f"Pending RAG+LLM calls: {len(jobs)} | workers={MAX_WORKERS} "
+          f"(cached users={len(cache['user'])}, items={len(cache['item'])})")
 
-    # item
-    for i_prof in tqdm(unique_items, desc="Expanding Item Intents"):
-        i_prof = str(i_prof).strip()
-        if i_prof not in cache["item"]:
-            i_exact = item_exact_map.get(i_prof, [])
-            q_emb = enc.encode([i_prof])[0]
-            options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])
-            options_filtered = [o for o in options if o not in i_exact]
-            
-            options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
-            prompt = p_rel.replace("{PROFILE}", i_prof).replace("{OPTIONS}", options_text)
-            
+    # ---- Pre-encode all pending profiles in ONE batch ----
+    # SentenceTransformer is NOT called concurrently (PyTorch forward is not
+    # guaranteed thread-safe); we batch-encode here, then only do ANN reads +
+    # LLM calls inside threads.
+    emb_map = {}
+    if jobs:
+        all_profs = [key for _, key in jobs]
+        prof_embs = enc.encode(all_profs)
+        for (kind, key), e in zip(jobs, prof_embs):
+            emb_map[(kind, key)] = e
+
+    # ---- Concurrent expansion (thread-safe cache + periodic atomic save) ----
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    cache_lock = threading.Lock()
+    save_state = {"since_save": 0}
+
+    def process(kind, key):
+        exact = exact_maps[kind].get(key, [])
+        q_emb = emb_map[(kind, key)]
+        options = knn_strings(ann, q_emb, vocab, cfg["rag"]["knn_k"])  # ANN read is thread-safe
+        options_filtered = [o for o in options if o not in exact]
+        options_text = "\n".join([f"{idx}: {opt}" for idx, opt in enumerate(options_filtered)])
+        prompt = p_rel.replace("{PROFILE}", key).replace("{OPTIONS}", options_text)
+        try:
             ans = chat_with_retry(sys_prompt, prompt)
-            selected_indices = _safe_eval_list(ans)
-            
-            i_rel = []
-            for idx in selected_indices:
-                try:
-                    idx_int = int(idx)
-                    if 0 <= idx_int < len(options_filtered):
-                        i_rel.append(options_filtered[idx_int])
-                except:
-                    pass
-            
-            cache["item"][i_prof] = i_rel
-            save_counter += 1
-            if save_counter >= 20:
+        except Exception as e:
+            print(f"\n[skip {kind}] permanent failure, will retry next run: {e}")
+            return
+        selected_indices = _safe_eval_list(ans)
+        rel = []
+        for idx in selected_indices:
+            try:
+                idx_int = int(idx)
+                if 0 <= idx_int < len(options_filtered):
+                    rel.append(options_filtered[idx_int])
+            except Exception:
+                pass
+        with cache_lock:
+            cache[kind][key] = rel
+            save_state["since_save"] += 1
+            if save_state["since_save"] >= 50:
                 save_cache()
-                save_counter = 0
+                save_state["since_save"] = 0
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            futures = [ex.submit(process, kind, key) for kind, key in jobs]
+            for _ in tqdm(as_completed(futures), total=len(futures), desc="Expanding Intents"):
+                pass
 
     save_cache()
 

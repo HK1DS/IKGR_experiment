@@ -3,14 +3,47 @@ Extract exact intents
 '''
 
 import yaml, os
+import re, ast, json
 import pandas as pd
 from tqdm import tqdm
 from ikgr_core.llm_client import LocalLLM
 from ikgr_core.utils import read_csv, write_csv, ensure_dir
 
+# Number of concurrent LLM requests for intent extraction.
+# Conservative default to respect API rate limits; override via env var
+# (e.g. set IKGR_STEP1_WORKERS=12 if the provider allows higher throughput).
+MAX_WORKERS = int(os.environ.get("IKGR_STEP1_WORKERS", "8"))
+
 def load_prompt(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
+
+def parse_intent_list(s):
+    """
+    Robustly parse an LLM response into a list of intent strings.
+    Handles markdown code fences, surrounding prose, and JSON/Python list syntax.
+    Returns a list[str] (possibly empty).
+    """
+    if not isinstance(s, str):
+        return []
+    s = s.strip()
+    if not s:
+        return []
+    # Strip markdown code fences (```python / ```json / ```)
+    s = re.sub(r"^```(?:python|json)?", "", s, flags=re.MULTILINE)
+    s = re.sub(r"```$", "", s, flags=re.MULTILINE)
+    s = s.strip()
+    # Extract the first [...] block if surrounded by prose
+    m = re.search(r"\[.*\]", s, re.DOTALL)
+    content = m.group(0) if m else s
+    for parser in (ast.literal_eval, json.loads):
+        try:
+            val = parser(content)
+            if isinstance(val, list):
+                return [str(x).strip() for x in val if str(x).strip()]
+        except Exception:
+            pass
+    return []
 
 def main():
     cfg = yaml.safe_load(open("config.yaml"))
@@ -39,8 +72,12 @@ def main():
         cache = {"user": {}, "item": {}}
 
     def save_cache():
-        with open(cache_path, "w", encoding="utf-8") as f:
+        # Atomic write: serialize to a temp file then replace, so an interrupt
+        # mid-write cannot corrupt the resumable cache.
+        tmp = cache_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, cache_path)
 
     def chat_with_retry(sys_prompt, prompt, max_retries=10, initial_delay=5):
         delay = initial_delay
@@ -69,30 +106,52 @@ def main():
 
     print(f"Unique Users: {len(unique_users)}, Unique Items: {len(unique_items)}")
 
-    save_counter = 0
-    # Process unique user profiles
-    for uprof in tqdm(unique_users, desc="Extracting User Intents"):
-        uprof = str(uprof).strip()
-        if uprof not in cache["user"]:
-            up = p_user.replace("{PROFILE}", uprof)
-            u_ans = chat_with_retry(sys_prompt, up)
-            cache["user"][uprof] = u_ans if u_ans.startswith("[") else "[]"
-            save_counter += 1
-            if save_counter >= 20:
-                save_cache()
-                save_counter = 0
+    # ---- Concurrent intent extraction (thread-safe cache + periodic atomic save) ----
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
 
-    # Process unique item profiles
-    for iprof in tqdm(unique_items, desc="Extracting Item Intents"):
-        iprof = str(iprof).strip()
-        if iprof not in cache["item"]:
-            ip = p_item.replace("{PROFILE}", iprof)
-            i_ans = chat_with_retry(sys_prompt, ip)
-            cache["item"][iprof] = i_ans if i_ans.startswith("[") else "[]"
-            save_counter += 1
-            if save_counter >= 20:
+    cache_lock = threading.Lock()
+    save_state = {"since_save": 0}
+
+    def process(kind, prof, template):
+        key = str(prof).strip()
+        if not key:
+            return
+        # Skip if another thread (or a previous run) already cached it.
+        with cache_lock:
+            if key in cache[kind]:
+                return
+        try:
+            ans = chat_with_retry(sys_prompt, template.replace("{PROFILE}", key))
+            parsed = str(parse_intent_list(ans))
+        except Exception as e:
+            # Don't cache on permanent failure -> it will be retried next run.
+            print(f"\n[skip {kind}] permanent failure, will retry next run: {e}")
+            return
+        with cache_lock:
+            cache[kind][key] = parsed
+            save_state["since_save"] += 1
+            if save_state["since_save"] >= 50:
                 save_cache()
-                save_counter = 0
+                save_state["since_save"] = 0
+
+    # Build the pending job list (dedup within a kind + skip already-cached).
+    jobs, seen = [], {"user": set(), "item": set()}
+    for kind, profiles, template in (("user", unique_users, p_user), ("item", unique_items, p_item)):
+        for prof in profiles:
+            key = str(prof).strip()
+            if key and key not in cache[kind] and key not in seen[kind]:
+                seen[kind].add(key)
+                jobs.append((kind, prof, template))
+
+    print(f"Pending LLM calls: {len(jobs)} | workers={MAX_WORKERS} "
+          f"(cached users={len(cache['user'])}, items={len(cache['item'])})")
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            futures = [ex.submit(process, kind, prof, tmpl) for kind, prof, tmpl in jobs]
+            for _ in tqdm(as_completed(futures), total=len(futures), desc="Extracting Intents"):
+                pass
 
     save_cache()
 

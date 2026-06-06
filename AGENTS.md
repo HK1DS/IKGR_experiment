@@ -1,145 +1,110 @@
 # IKGR Pipeline Progress & Execution Guide
 
-이 문서는 IKGR (Intent Knowledge Graph Recommender) 파이프라인의 진행 상황 및 향후 프로젝트를 새로 내려받아 이어서 진행할 때 참고할 수 있는 실행 가이드라인을 정리한 파일입니다.
+이 문서는 IKGR 파이프라인의 진행 상황 및 새 세션/새 환경에서 이어서 진행할 때 참고하는 실행 가이드입니다.
+**(최종 갱신: Step A(k-core 생성) + Step B(step1 의도 추출) 완료, Step C(step2 RAG 확장) 진행 대기 시점)**
+
+### ✅ 현재 진행 현황 한눈에 보기
+| 단계 | 내용 | 상태 |
+|------|------|------|
+| Step A | k=100 K-core 실데이터 생성 | ✅ 완료 (`data/k_core/interactions_k100.csv`, `profiles_k100.csv`) |
+| Step B | step1 — LLM 의도 추출 | ✅ 완료 (`run/step1_intents.csv`, **11,073행 전부 채워짐**, exact intent 빈 셀 0) |
+| Step C | step2 — RAG 의도 확장 | ⏳ **다음 실행 대상** (유료) |
+| Step D | 임베딩 뱅크 + RecBole 포맷 변환 | ⬜ 대기 |
+| Step E | step3 — IKGR GNN 학습/평가 | ⬜ 대기 |
 
 ---
 
-## 1. 현재 진행 상황 및 이슈 요약
+## 0. 프로젝트 큰 그림 (졸업작품 목표)
 
-### 📊 데이터 준비 상황
-* 원본 데이터(`goodreads_books_children.json.gz`, `goodreads_interactions_children.json.gz`)를 CSV로 파싱하는 전처리를 마쳤습니다.
-* 원본 전체 데이터(38.6GB)는 로컬 테스트 및 API 비용 절감을 위해 **2,138행 크기의 샘플 데이터셋**(`profiles_sample.csv`, `interactions_sample.csv`)으로 추출해 두었습니다.
+학부 졸업작품. 최종 목표는 **3단 통합 프레임워크가 개별 프레임워크보다 낫다는 것을 보이는 것**:
 
-### 🛑 진행 중단 사유 (Gemini API 쿼터 초과)
-* `step1.py` (유저/아이템 의도 추출)를 실행하던 중, **Gemini 3.0 Flash Free Tier API**의 호출 한도에 걸려 중단되었습니다.
-* **에러 메시지**: `429 RESOURCE_EXHAUSTED (Quota exceeded for generate_content_free_tier_requests)`
-* **원인**: 2,138행의 샘플이라도 첫 실행 시 유저/아이템 각각 API를 요청하므로 약 4,200회 이상의 호출이 필요한데, 무료 티어의 제한(분당 15회 및 일일 1,500회)으로 인해 대기 시간이 무한정 길어지다 에러가 발생해 멈췄습니다.
+1. **IKGR** — LLM으로 의도(intent) 추출 → intent-aware KG 구축 *(이 레포에 구현되어 있는 부분)*
+2. **DynLLM** — multi-faceted 유저 프로필 생성 → KG 엣지 가중치 동적 갱신 *(미구현)*
+3. **CORONA** — 동적 KG 탐색 → 후보 생성 → LLM 필터링 → 가중합 랭킹 *(미구현)*
 
-### 🧹 깃허브 업로드 준비 완료
-* 대용량 원본 데이터(`data/`) 및 로컬 캐시/출력 폴더(`run/`)는 `.gitignore`에 등록하여 깃허브 업로드 대상에서 배제했습니다.
-* 임시로 사용했던 테스트용 스크립트(`test_llm.py`, `explore_data.py` 등) 및 로컬 캐시 파일들은 모두 삭제하여 리포지토리를 깔끔하게 정리했습니다.
+→ ablation: `Full(1+2+3)` vs `각 컴포넌트 단독`. cold-start / long-tail 슬라이스에서 우위를 보이는 것이 핵심.
+→ 평가 기준은 SOTA가 아니라 "동작하고, 신뢰 가능하고, arXiv 수준으로 쓸 수 있는" 최소 실행 가능 버전.
 
 ---
 
-## 2. 프로젝트를 새로 받아 이어서 진행하는 방법
+## 1. 확정된 결정사항
 
-다른 환경이나 깃허브에서 프로젝트를 다시 클론(Clone)받아 진행할 때의 단계별 순서입니다.
+### 데이터셋: Goodreads Children, **k=100 K-core (진짜 데이터)**
+* 샘플 csv가 아니라 원본 `data/profiles.csv`(37GB) / `data/interactions.csv`(1,005만 행)에 k-core 필터 적용.
+* k=100 결과: **유저 11,073 / 아이템 6,857 / 인터랙션 2,489,355** (밀도 ~363 인터랙션/아이템).
+* 이전 에이전트가 만든 임의 샘플(50유저, 1,000유저)은 폐기. 표준 k-core라 재현 가능.
 
-### Step 1. 가상환경 설정 및 패키지 설치
-리포지토리 폴더(`IKGR-main/IKGR-main`) 내에서 가상환경을 생성하고 필요한 라이브러리를 설치합니다.
+### LLM provider: Luxia Cloud (gpt-4o-mini 브리지)
+* `config.yaml`의 `llm` 섹션이 Luxia로 설정됨. `.env`에 `LUXIA_API_KEY` 세팅 완료(확인됨).
+* **남은 크레딧: $59.**
+
+### 비용 현실 (중요 — 레포의 기존 추정은 ~70배 부풀려져 있었음)
+* gpt-4o-mini 실단가: 입력 $0.15 / 출력 $0.60 per 1M tokens → **호출당 약 $0.0002~0.0003**.
+* `run/k_core_analyzer.py` / `result_example.md`의 "$0.015/call"은 **틀린 값**. 참고하지 말 것.
+* k=100 비용 추정:
+  * IKGR만(step1+step2, ~36K 호출): **~$7~11**
+  * 통합 프레임워크 전체(IKGR+DynLLM+CORONA+디버깅 마진, ~87K 호출): **~$19** → $59 안에서 여유 있음.
+* 대안: long-tail을 더 보존하려면 k=20/30 코어가 좋지만 비용↑($120~150). 이 경우 **Qwen-turbo(3배 저렴, 무제한 종량제)** 또는 DeepSeek로 전환 권장. `LocalLLM`이 이미 OpenAI 호환 provider를 지원하므로 `config.yaml`+`.env`만 수정하면 됨.
+
+---
+
+## 2. 이번 세션에서 해결한 잔존 문제 (수정 완료, 저장됨)
+
+1. **`step2.py` `p_rel` 미정의 버그** → `load_prompt()` 추가 + `p_rel = load_prompt("prompts/step2_related.txt")` 로딩 추가. (이전엔 step2 실행 시 즉시 `NameError`)
+2. **`apply_k_core.py`가 37GB profiles.csv를 통째로 `pd.read_csv`** → OOM. **메모리 안전 버전으로 재작성**:
+   * interactions만 메모리 로드 후 k-core 필터.
+   * profiles.csv는 **청크 스트리밍**으로 k-core 엔티티의 프로필만 수집.
+   * 모든 유저·아이템이 1회 이상 등장하는 **작은 "커버" 프로필 파일**을 출력 → 다운스트림(step1/step2/banks/convert) 메모리 문제 제거. (LLM은 어차피 고유 프로필당 1회만 호출하므로 손실 없음)
+3. **stale 산출물 정리** → `run/_backup_old_sample/`로 이동(삭제 아님):
+   * `run/recbole/ikgr-custom-Dataset.pth` (RecBole가 캐시된 옛 2,138행 데이터셋을 재로딩하는 문제), 옛 체크포인트, 옛 `data/ikgr-custom/*.inter/.kg`, 옛 `run/step1_cache.json`(53유저).
+4. **`config.yaml` 경로** → `input_csv: data/k_core/profiles_k100.csv`, `inter_file: data/k_core/interactions_k100.csv`로 교체.
+
+---
+
+## 3. 재개 순서 (여기서부터 진행)
+
+### Step A. k-core 실데이터 생성 (무료, API 미사용, ~10~30분) — ✅ **완료**
 ```bash
-# 가상환경 생성
-python -m venv .venv
-
-# 가상환경 활성화 (Windows PowerShell 기준)
-.venv\Scripts\activate
-
-# 패키지 설치
-pip install -r requirements.txt
+python apply_k_core.py --profiles_in data/profiles.csv --interactions_in data/interactions.csv --k 100 --out_dir data/k_core
 ```
+* 산출물: `data/k_core/interactions_k100.csv`, `data/k_core/profiles_k100.csv`(커버 파일). **생성 확인됨.**
 
-### Step 2. API Key 및 환경 설정 (.env 생성)
-1. 리포지토리 루트에 있는 `.env.example` 파일을 복사해 `.env` 파일을 생성합니다.
-2. `.env` 파일 안에 본인의 API Key를 입력합니다.
-   ```bash
-   GEMINI_API_KEY=your_actual_api_key_here
-   ```
-
-### Step 3. 데이터 전처리 (JSON.GZ ➡️ CSV 변환)
-만약 `data/` 폴더에 CSV 파일들이 없고 원본 `.json.gz` 파일만 존재하는 상태라면, 전처리 스크립트를 실행하여 파이프라인용 CSV를 먼저 추출해야 합니다.
+### Step B. Step 1 — LLM 의도 추출 (⚠️ 유료) — ✅ **완료**
 ```bash
-python goodreads_preprocess.py \
-  --interactions_gz goodreads_interactions_children.json.gz \
-  --books_gz goodreads_books_children.json.gz \
-  --out_profiles data/profiles.csv \
-  --out_interactions data/interactions.csv
+python step1.py
 ```
-* **출력 파일**: `data/profiles.csv` (약 38GB) 및 `data/interactions.csv` (약 450MB)가 생성됩니다.
+* **결과: `run/step1_intents.csv` 생성 완료. 총 11,073행, `user_profile`/`item_profile`/`user_intents_exact`/`item_intents_exact` 네 컬럼 모두 빈 셀 0개로 검증됨.** 캐시는 `run/step1_cache.json`에 적재됨.
+* 고유 프로필 dedup 후 약 15K 호출(유저 8.3K + 아이템 6.8K). 캐시(`run/step1_cache.json`)로 중단/재개 가능.
+* **동시성(8 워커, `IKGR_STEP1_WORKERS`로 조절) + 락 기반 thread-safe 캐시 + 원자적 저장 적용됨.**
+* **LLM 출력 파싱 견고화**: gpt-4o-mini가 ```` ```python ```` 코드펜스로 감싸 출력하므로, 단순 `startswith("[")` 대신 `parse_intent_list()`로 펜스 제거 후 리스트 추출. (이 수정 없으면 의도가 대량 누락됨 — 검증 완료)
 
-### Step 4. 테스트용 샘플 데이터 추출 (선택 사항)
-전체 데이터를 LLM API로 처리하기엔 시간과 비용이 막대하므로, 테스트용 소형 샘플을 만드는 것이 좋습니다. (현재 환경에는 2,138행으로 구성된 샘플이 이미 생성되어 `data/`에 저장되어 있습니다.)
-
-만약 새로 샘플링을 진행하려면 아래와 같이 파이썬 코드를 통해 앞부분의 일부 행만 슬라이싱하여 샘플 파일을 생성할 수 있습니다.
-```python
-import pandas as pd
-
-# interactions 샘플 생성 (예: 상위 2000개만 사용)
-df_inter = pd.read_csv("data/interactions.csv", nrows=2000)
-df_inter.to_csv("data/interactions_sample.csv", index=False)
-
-# interactions 샘플에 포함된 user_id, item_id에 매칭되는 profile만 추출
-u_ids = set(df_inter["user_id"])
-i_ids = set(df_inter["item_id"])
-
-df_prof = pd.read_csv("data/profiles.csv")
-df_prof_sample = df_prof[df_prof["user_id"].isin(u_ids) & df_prof["item_id"].isin(i_ids)]
-df_prof_sample.to_csv("data/profiles_sample.csv", index=False)
+### Step C. Step 2 — RAG 의도 확장 (⚠️ 유료) — ⏳ **다음 실행 대상**
+```bash
+python step2.py
 ```
+* **사전 조건 모두 충족 확인됨** (step1 산출물 완전, `prompts/step2_related.txt` 존재 → `p_rel` 정상 로딩, config 경로 정상). 바로 실행 가능.
+* 입력 `run/step1_intents.csv` → 출력 `run/step2_related_intents.csv`. step1 exact intent로 vocab 새로 구성 후 RAG 후보 → LLM 선택.
+* 약 15K 호출. 캐시(`run/step2_cache.json`)로 중단/재개 가능. **이 단계 들어가기 전 사용자 재확인 필요.**
+* **step1과 동일하게 동시성(8 워커) + 원자적 캐시 저장 적용됨.** 단, 인코더(SentenceTransformer) thread-safety 문제 때문에 임베딩은 동시 단계 전에 배치로 미리 계산하고, 스레드에서는 ANN 검색(읽기) + LLM 호출만 수행. 워커 수는 `IKGR_STEP2_WORKERS`로 조절.
 
-### Step 5. config.yaml 설정 확인
-* `config.yaml` 파일의 `paths` 섹션이 실행하려는 데이터 경로를 가리키고 있는지 확인합니다:
-  * **전체 데이터로 실행 시**:
-    ```yaml
-    paths:
-      input_csv: data/profiles.csv
-      inter_file: data/interactions.csv
-    ```
-  * **샘플 데이터로 테스트 시**:
-    ```yaml
-    paths:
-      input_csv: data/profiles_sample.csv
-      inter_file: data/interactions_sample.csv
-    ```
+### Step D. 임베딩 뱅크 + RecBole 포맷 변환
+```bash
+python build_intent_banks.py --step2_csv run/step2_related_intents.csv --encoder sentence-transformers/all-mpnet-base-v2 --user_out run/user_bank.pt --item_out run/item_bank.pt
+python convert_to_recbole_atomic.py --interactions data/k_core/interactions_k100.csv --intents run/step2_related_intents.csv --out_dir data/k_core --dataset ikgr-custom
+```
+* 변환 후 RecBole 폴더 정렬 필요: `data/k_core/ikgr-custom.{inter,kg}` → `data/k_core/ikgr-custom/` 폴더로 이동.
+  (step3가 `data_path = dirname(inter_file) = data/k_core` 에서 `data/k_core/ikgr-custom/ikgr-custom.inter`를 찾음)
 
-### Step 6. LLM API 변경 및 재시도 (중요 💡)
-가성비가 좋은 Qwen(Alibaba)이나 DeepSeek, 혹은 제공받은 Luxia Cloud API나 유료 OpenAI/Gemini API로 전환하여 `step1`을 이어서 실행합니다.
+### Step E. Step 3 — IKGR GNN 학습/평가
+```bash
+python step3.py
+```
+* IKGR baseline 성능 확보. 이후 DynLLM/CORONA 구현 단계로.
 
-* **Luxia Cloud API (OpenAI GPT-4o-mini Bridge)로 변경하는 경우**:
-  `config.yaml`의 `llm` 설정을 다음과 같이 변경합니다. (.env 파일에 `LUXIA_API_KEY` 입력 필수)
-  ```yaml
-  llm:
-    base_url: https://bridge.luxiacloud.com/llm/openai/chat/completions/gpt-4o-mini
-    api_key: "${LUXIA_API_KEY}"
-    model: "llm"
-    provider: luxia
-    temperature: 0.2
-    top_p: 0.95
-    max_tokens: 2048
-  ```
+---
 
-* **OpenAI 호환 API (Qwen, DeepSeek 등)로 변경하는 경우**:
-  `config.yaml`의 `llm` 설정을 다음과 같이 변경합니다.
-  ```yaml
-  llm:
-    base_url: "https://api.deepseek.com/v1" # 또는 사용하려는 모델 API의 Endpoint
-    api_key: "${DEEPSEEK_API_KEY}"          # .env에 키 정의 필요
-    model: "deepseek-chat"
-    provider: openai                        # openai로 변경하면 표준 OpenAI API 규격으로 통신합니다.
-    temperature: 0.2
-    max_tokens: 2048
-  ```
-
-### Step 7. 파이프라인 단계별 실행
-
-1. **Step 1: 유저 및 아이템 고유 의도 추출**
-   ```bash
-   python step1.py
-   ```
-   * 완료 시 `run/step1_intents.csv` 파일이 생성됩니다.
-
-2. **Step 2: 추출된 의도를 RAG 및 LLM을 사용해 관련 의도로 확장**
-   ```bash
-   python step2.py
-   ```
-   * 완료 시 `run/step2_related_intents.csv` 파일이 생성됩니다.
-
-3. **RecBole 연동용 데이터 포맷 변환 및 의도 임베딩 은행(Intent Bank) 구축**
-   ```bash
-   python convert_to_recbole_atomic.py --interactions data/interactions_sample.csv --intents run/step2_related_intents.csv --out_dir data --dataset ikgr-custom
-   python build_intent_banks.py --step2_csv run/step2_related_intents.csv --encoder sentence-transformers/all-mpnet-base-v2 --user_out run/user_bank.pt --item_out run/item_bank.pt
-   ```
-
-4. **Step 3: IKGR 추천 GNN 모델 학습 및 평가**
-   ```bash
-   python step3.py
-   ```
+## 4. 환경 메모
+* Windows + cmd 셸. `python`이 직접 안 잡히면 `.venv\Scripts\python.exe` 사용.
+* PowerShell에서 `$_` 등 변수 이스케이프가 깨지는 경우가 있으니, 파일 조작은 짧은 Python 스크립트로 처리하는 게 안전.
+* `.gitignore`가 `data/`, `run/` 전체를 제외 → 대용량 데이터/산출물은 깃 추적 대상 아님.
+* **인코딩 주의**: Windows 기본 인코딩이 `cp949`라 `run/*.json`(예: step1/step2 캐시)을 점검용으로 직접 열 때 `open(path)`만 쓰면 `UnicodeDecodeError`가 난다. 반드시 `open(path, encoding="utf-8")`로 열 것. (파이프라인 코드 자체는 이미 utf-8로 읽고/쓰므로 정상 동작에는 영향 없음 — 디버깅 스크립트에서만 주의.)
