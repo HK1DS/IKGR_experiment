@@ -44,24 +44,41 @@ def build_banks(step2_csv, encoder_name, user_out, item_out):
     df = pd.read_csv(step2_csv).fillna("")
     enc = SentenceTransformer(encoder_name)
 
-    user_bank = {}
-    item_bank = {}
-
+    # --- Pass 1: collect per-token intent lists (exact + related, dedup, order-preserving)
+    user_intents = {}  # uid_raw -> List[str]
+    item_intents = {}  # iid_raw -> List[str]
     for _, r in df.iterrows():
         uid_raw = str(r.get("user_id", "")).strip()
         iid_raw = str(r.get("item_id", "")).strip()
-        # collect intents: exact + related
         u_ints = _unique_keep_order(_as_list(r.get("user_intents_exact", "[]")) + _as_list(r.get("user_intents_related", "[]")))
         i_ints = _unique_keep_order(_as_list(r.get("item_intents_exact", "[]")) + _as_list(r.get("item_intents_related", "[]")))
+        if uid_raw and u_ints and uid_raw not in user_intents:
+            user_intents[uid_raw] = u_ints
+        if iid_raw and i_ints and iid_raw not in item_intents:
+            item_intents[iid_raw] = i_ints
 
-        if uid_raw and u_ints:
-            emb_u = enc.encode(u_ints, convert_to_tensor=True)  # [k_u, d]
-            user_bank[uid_raw] = emb_u.cpu()
-        if iid_raw and i_ints:
-            emb_i = enc.encode(i_ints, convert_to_tensor=True)  # [k_i, d]
-            item_bank[iid_raw] = emb_i.cpu()
+    # --- Encode every UNIQUE intent string exactly once (huge speedup on CPU)
+    vocab = set()
+    for lst in user_intents.values():
+        vocab.update(lst)
+    for lst in item_intents.values():
+        vocab.update(lst)
+    vocab = sorted(vocab)
+    print(f"[encode] unique intents: {len(vocab)} (was {sum(len(v) for v in user_intents.values()) + sum(len(v) for v in item_intents.values())} non-unique)")
 
-    dim = next(iter(user_bank.values())).shape[1] if user_bank else (next(iter(item_bank.values())).shape[1] if item_bank else 0)
+    emb_all = enc.encode(
+        vocab,
+        convert_to_tensor=True,
+        batch_size=256,
+        show_progress_bar=True,
+    ).cpu()  # [V, d]
+    emb_map = {tok: emb_all[idx] for idx, tok in enumerate(vocab)}
+
+    # --- Assemble per-token banks by stacking the relevant intent embeddings (order preserved)
+    user_bank = {uid: torch.stack([emb_map[t] for t in ints]) for uid, ints in user_intents.items()}
+    item_bank = {iid: torch.stack([emb_map[t] for t in ints]) for iid, ints in item_intents.items()}
+
+    dim = int(emb_all.shape[1]) if emb_all.numel() else 0
 
     os.makedirs(os.path.dirname(user_out), exist_ok=True)
     os.makedirs(os.path.dirname(item_out), exist_ok=True)

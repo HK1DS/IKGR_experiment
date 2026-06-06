@@ -64,6 +64,12 @@ def main():
         "train_neg_sample_args": {"distribution": "uniform"},
         "save_dataset": True,
         "checkpoint_dir": paths["recbole_dump"],
+        # Reproducible baseline record
+        "seed": 2020,
+        "reproducibility": True,
+        # Memory-safety knobs for small-VRAM GPUs (see ikgr_core/model_ikgr.py)
+        "max_intents_per_node": 64,
+        "intent_score_chunk": 2048,
     }
 
     config = Config(model=IKGRModel, dataset=rb["dataset"], config_dict=config_dict)
@@ -114,6 +120,36 @@ def main():
 
     print("[valid]", best_valid_result)
     print("[test ]", test_result)
+
+    # ---- Persist a reproducible baseline record (IKGR standalone) ----
+    import json, time
+    record = {
+        "model": "IKGR",
+        "variant": "intent-bank re-ranking (KGCN/TransH inactive)",
+        "dataset": rb["dataset"],
+        "timestamp": time.strftime("%Y-%m-%d_%H-%M-%S"),
+        "seed": config_dict.get("seed"),
+        "config": {
+            "epochs": rb["epochs"],
+            "embedding_size": rb["embedding_size"],
+            "lambda_mix": rb["lambda_mix"],
+            "dropout": rb.get("dropout", 0.1),
+            "topk": rb["topk"],
+            "metrics": rb["metrics"],
+            "max_intents_per_node": int(config["max_intents_per_node"]) if "max_intents_per_node" in config else 64,
+            "intent_score_chunk": int(config["intent_score_chunk"]) if "intent_score_chunk" in config else 2048,
+        },
+        "n_users": int(dataset.user_num),
+        "n_items": int(dataset.item_num),
+        "best_valid_score": float(best_valid_score),
+        "best_valid_result": {k: float(v) for k, v in best_valid_result.items()},
+        "test_result": {k: float(v) for k, v in test_result.items()},
+        "checkpoint": getattr(trainer, "saved_model_file", None),
+    }
+    out_path = os.path.join(paths["workdir"], "ikgr_baseline_result.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False, indent=2)
+    print(f"[step3] baseline record saved: {out_path}")
 
 if __name__ == "__main__":
     main()

@@ -1,10 +1,24 @@
+import os
+import sys
 from typing import List, Sequence
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from .utils import save_json, load_json
 
-# Dynamic fallback to support both Annoy (original) and sklearn NearestNeighbors (Windows compatibility)
+# Dynamic fallback to support both Annoy (original) and sklearn NearestNeighbors.
+# NOTE: On Windows the Annoy native extension reliably segfaults during
+# AnnoyIndex.build() for large indexes (observed at 53K x 768, 50 trees) and
+# kills the process WITHOUT a Python traceback. We therefore default to the
+# sklearn brute-force NearestNeighbors backend on win32, which is fully
+# reliable here. Set IKGR_FORCE_ANNOY=1 to force Annoy regardless of platform.
+_FORCE_ANNOY = os.environ.get("IKGR_FORCE_ANNOY", "").lower() in ("1", "true", "yes")
+_USE_ANNOY = _FORCE_ANNOY or sys.platform != "win32"
 try:
+    if not _USE_ANNOY:
+        raise ImportError(
+            "Annoy disabled on Windows due to native build crash; "
+            "set IKGR_FORCE_ANNOY=1 to override."
+        )
     from annoy import AnnoyIndex
     HAS_ANNOY = True
 except ImportError:

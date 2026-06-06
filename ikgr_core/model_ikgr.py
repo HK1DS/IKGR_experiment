@@ -127,6 +127,13 @@ class IKGR(GeneralRecommender):
         self.embed_dim = int(_cfg(config, "embedding_size", 64))
         self.lambda_mix = float(_cfg(config, "lambda_mix", 0.1))
         self.dropout = float(_cfg(config, "dropout_prob", 0.1))
+        # Memory-safety knobs (important on small-VRAM GPUs):
+        #  - max_intents_per_node: cap intents kept per user/item (padding width).
+        #    Mean ~25, p99 ~50, max ~111; cap=64 covers >99% with far less VRAM.
+        #  - intent_score_chunk: rows processed per chunk in forward() to bound the
+        #    [chunk, max_ku, max_ki] bmm during full-sort evaluation.
+        self.max_intents = int(_cfg(config, "max_intents_per_node", 64))
+        self.intent_chunk = int(_cfg(config, "intent_score_chunk", 2048))
 
         num_users, num_items = self.n_users, self.n_items
 
@@ -169,8 +176,14 @@ class IKGR(GeneralRecommender):
         # Pre-build 3D padded tensors to avoid slow python loops during training/eval
         device = self.user_embedding.weight.device
 
+        cap = self.max_intents
+
+        def _cap(t):
+            # Keep at most `cap` intents per node to bound padding width / VRAM.
+            return t[:cap] if (t is not None and t.shape[0] > cap) else t
+
         # 1) User Padded Tensor
-        user_lists = [user_bank.get(u, torch.zeros(1, 768, device=device)) for u in range(self.n_users)]
+        user_lists = [_cap(user_bank.get(u, torch.zeros(1, 768, device=device))) for u in range(self.n_users)]
         intent_dim = user_lists[0].shape[1] if user_lists else 768
         max_ku = max(u.shape[0] for u in user_lists) if user_lists else 1
         self.user_intents_padded = torch.zeros(self.n_users, max_ku, intent_dim, device=device)
@@ -182,7 +195,7 @@ class IKGR(GeneralRecommender):
                 self.user_intents_mask[u, :k] = True
 
         # 2) Item Padded Tensor
-        item_lists = [item_bank.get(i, torch.zeros(1, intent_dim, device=device)) for i in range(self.n_items)]
+        item_lists = [_cap(item_bank.get(i, torch.zeros(1, intent_dim, device=device))) for i in range(self.n_items)]
         max_ki = max(i.shape[0] for i in item_lists) if item_lists else 1
         self.item_intents_padded = torch.zeros(self.n_items, max_ki, intent_dim, device=device)
         self.item_intents_mask = torch.zeros(self.n_items, max_ki, device=device, dtype=torch.bool)
@@ -199,7 +212,7 @@ class IKGR(GeneralRecommender):
         """
         # Chunk evaluation input if batch size is too large to prevent VRAM OOM / paging
         batch_size = user.shape[0]
-        max_chunk = 50000
+        max_chunk = self.intent_chunk
         if batch_size > max_chunk:
             scores_list = []
             for start in range(0, batch_size, max_chunk):
