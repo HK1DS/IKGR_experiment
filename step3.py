@@ -67,9 +67,14 @@ def main():
         # Reproducible baseline record
         "seed": 2020,
         "reproducibility": True,
+        # Evaluate every 5 epochs instead of every epoch: full-sort eval over
+        # ~11k users x 6.8k items is the main time cost (~minutes each).
+        "eval_step": 5,
         # Memory-safety knobs for small-VRAM GPUs (see ikgr_core/model_ikgr.py)
-        "max_intents_per_node": 64,
-        "intent_score_chunk": 2048,
+        # Lower cap frees VRAM so the eval chunk can be larger -> far fewer
+        # forward() calls during full-sort evaluation (the main bottleneck).
+        "max_intents_per_node": 32,
+        "intent_score_chunk": 8192,
     }
 
     config = Config(model=IKGRModel, dataset=rb["dataset"], config_dict=config_dict)

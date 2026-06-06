@@ -10,7 +10,8 @@
 | Step B | step1 — LLM 의도 추출 | ✅ 완료 (`run/step1_intents.csv`, **11,073행 전부 채워짐**, exact intent 빈 셀 0) |
 | Step C | step2 — RAG 의도 확장 | ✅ **완료** (`run/step2_related_intents.csv`, 11,073행 전부 채워짐 / related 평균 user 14.15·item 14.58개) |
 | Step D | 임베딩 뱅크 + RecBole 포맷 변환 | ✅ **완료** (`run/user_bank.pt` 11,073×768, `run/item_bank.pt` 6,857×768, `data/k_core/ikgr-custom/{inter,kg}` 배치 완료) |
-| Step E | step3 — IKGR GNN 학습/평가 | ⏳ **다음 실행 대상** (※ 아래 검수 메모 확인) |
+| Step E | step3 — IKGR GNN 학습/평가 | ✅ **완료** (baseline 기록: `run/ikgr_baseline_result.json` / test NDCG@10 0.045, Hit@10 0.296, MRR@10 0.125) |
+| 다음 | DynLLM 전처리/구현 | ⬜ 대기 |
 
 ---
 
@@ -103,19 +104,21 @@ python convert_to_recbole_atomic.py --interactions data/k_core/interactions_k100
 * RecBole 폴더 정렬 완료: `.inter/.kg`를 `data/k_core/ikgr-custom/`로 이동함 (step3가 `data_path = dirname(inter_file) = data/k_core`에서 `data/k_core/ikgr-custom/ikgr-custom.inter`를 찾음).
 * ⚡ **(이번 세션 최적화) `build_intent_banks.py` 재작성**: 기존엔 행마다 `encode()`를 호출(약 22K회, 50만+ 문자열)해 CPU에서 수 시간 소요 예상이었음. → **고유 intent(약 53K개)만 1회 배치 인코딩 후 토큰별로 stack**하도록 변경(출력 포맷·순서 동일). 인코딩 ~14초로 단축. 진행바(`show_progress_bar=True`) 추가.
 
-### Step E. Step 3 — IKGR GNN 학습/평가 — ⏳ **다음 실행 대상**
+### Step E. Step 3 — IKGR GNN 학습/평가 — ✅ **완료**
 ```bash
 python step3.py
 ```
-* IKGR baseline 성능 확보. 이후 DynLLM/CORONA 구현 단계로.
-
-#### ⚠️ step3.py 코드 검수 메모 (실행 전 인지 필요)
-* **실행 자체는 가능** (Step D에서 폴더 정렬까지 끝냄). 단 아래 한계 존재:
-* **KG(.kg)가 모델에서 실제로 사용되지 않음.** `convert_to_recbole_atomic.py`가 `user_has_intent`/`item_has_intent` 트리플 `.kg`를 만들지만, IKGR 모델은 `GeneralRecommender`라 RecBole이 KG를 로드하지 않고, 모델 내부 `self.neighbors`가 빈 리스트로 고정되어 `KGCNLayer`/`TransH`가 학습에 기여하지 않음(파라미터만 형식적으로 통과). → 현재 IKGR의 intent-aware 효과는 **전적으로 intent bank(코사인 max-sim)**에서만 나옴. "intent-aware KG" 주장을 하려면 KGCN neighbor 주입 보강 필요.
-* **rating=0 인터랙션이 34%(854,363행).** Goodreads "읽을 예정"(미평가) 항목. ranking+neg sampling에서 `.inter`의 모든 행이 positive로 취급되어 약한 신호가 대량 섞임. 품질 개선하려면 convert 단계에서 `rating>0` 필터 고려(현재는 미적용, 원본 충실 변환).
-* `intent_aware_score()` 독립 함수는 dead code(실제 `forward()`는 마스킹 per-pair 배치 버전 사용). base 임베딩 512차원 vs intent 768차원은 각자 스칼라 유사도로 환원돼 합산하므로 문제 없음.
-* `train_neg_sample_args: {"distribution": "uniform"}`가 RecBole 버전에 따라 `sample_num` 누락 경고/에러 가능 — 실행 시 관찰.
-* `save_dataset: True` → `run/recbole/`에 데이터셋 캐시 저장. 데이터 바뀌면 stale 캐시 재로딩 위험 있으니 캐시 삭제 후 재실행할 것(이전 세션 이슈, 현재는 정리됨).
+* **결과(IKGR 단독 baseline, seed=2020, GPU RTX 3060 Ti 8GB):** `run/ikgr_baseline_result.json`에 저장.
+  * test: Recall@10 0.0214 / @30 0.0478, MRR@10 0.1247, NDCG@10 0.0453 / @30 0.0491, Hit@10 0.2958 / @30 0.5153, Precision@10 0.0406.
+  * 체크포인트: `run/recbole/IKGR-Jun-07-2026_00-00-46.pth`. variant 라벨 = "intent-bank re-ranking (KGCN/TransH inactive)".
+* ⚠️ **이번 세션에서 step3가 그대로는 안 돌아서 수정한 내용 (model_ikgr.py + step3.py):**
+  1. **스택 오버플로(exit 0xC00000FD) 수정** — `forward()`의 `_ = self.kgcn(E, R, self.neighbors)`가 노드 17,930개를 파이썬 for 루프로 돌며 `out[v]=...` 인덱스 대입 → ~18k 깊이 autograd 그래프 → 첫 backward에서 Windows 스택(1MB) 초과로 네이티브 크래시(트레이스백 없음). KGCN 결과는 스코어에 안 쓰이는 죽은 값이라 **해당 호출 제거**. (실제 KG neighbor aggregation을 붙일 땐 *벡터화된* KGCN으로 재도입할 것.)
+  2. **8GB VRAM OOM 방지** — intent당 최대 111개라 full-sort 평가에서 `[chunk×k×768]` bmm이 청크 하나만 ~17GB. → 노드당 intent **cap=64→32**(평균 25, p99 50이라 손실 미미), 평가 청크 파라미터화(`intent_score_chunk`).
+  3. **평가 속도 최적화** — 병목은 full-sort 평가(전체 ~11K 유저×6.8K 아이템 1회 ≈ 4.6~5분). (a) intent bank를 `load_intent_banks`에서 **1회만 L2 정규화**해 저장→`forward`에서 정규화 생략(forward 84→58ms), (b) `intent_score_chunk=8192`가 최적(16384는 VRAM 압박으로 더 느림), (c) `eval_step=5`로 평가 횟수 20→4회 축소. 총 ~30분에 완료.
+  4. **재현성**: `seed=2020`, `reproducibility=True`. 결과를 `run/ikgr_baseline_result.json`로 저장하는 로직 추가.
+* 참고: RecBole 콘솔 로그가 PowerShell `Tee-Object`로 잘 안 잡힘 → 진행은 `log_tensorboard/<run>/events...` 파일 크기 증가로 모니터링. 최종 산출물은 결과 json + `run/recbole/*.pth`.
+* **남은 한계(미해결, 의도적):** KG(.kg)는 여전히 모델에 로드되지 않음 → intent bank 기반 스코어링만 동작. "intent-aware KG" 주장하려면 KGCN neighbor 주입 필요(다음 작업 후보).
+* **데이터 품질 메모:** `.inter`의 rating=0 인터랙션이 34%(854,363행, Goodreads "읽을 예정" 미평가). ranking+neg sampling에서 모두 positive로 취급됨. 이번 baseline은 원본 충실하게 0 포함으로 측정. 품질/슬라이스 분석 시 convert 단계에서 `rating>0` 필터 버전도 비교 권장.
 
 ---
 

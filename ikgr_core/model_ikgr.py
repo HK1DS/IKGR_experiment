@@ -205,6 +205,14 @@ class IKGR(GeneralRecommender):
                 self.item_intents_padded[i, :k, :] = item_lists[i].to(device)
                 self.item_intents_mask[i, :k] = True
 
+        # Pre-normalize the intent banks ONCE (L2 along feature dim). Zero-padded
+        # rows stay zero under F.normalize (divides by max(||x||, eps)). This lets
+        # forward() skip per-call normalization of the gathered [chunk, k, d]
+        # tensors, which was the dominant memory-bandwidth cost during full-sort
+        # evaluation. Padded rows are masked out downstream regardless.
+        self.user_intents_padded = F.normalize(self.user_intents_padded, dim=-1)
+        self.item_intents_padded = F.normalize(self.item_intents_padded, dim=-1)
+
     def forward(self, user, item):
         """
         user: [B] internal user ids
@@ -227,25 +235,27 @@ class IKGR(GeneralRecommender):
         u = self.dropout_layer(u)
         i = self.dropout_layer(i)
 
-        # Touch KGCN parameters to let them train
-        E = self.entity_embeddings.weight
-        R = self.relation_embeddings.weight
-        _ = self.kgcn(E, R, self.neighbors)
+        # NOTE: A previous version called `self.kgcn(E, R, self.neighbors)` here
+        # "to let the KGCN params train". With empty neighbors it contributes
+        # nothing to the score, yet its per-node Python loop (N = n_users+n_items
+        # index-assignments) built an ~18k-deep autograd graph whose backward
+        # recursion overflowed the Windows stack (exit 0xC00000FD). Since the
+        # KGCN/TransH/entity/relation params are unused by the score anyway, the
+        # call is removed. (Re-introduce a *vectorized* KGCN if real KG neighbor
+        # aggregation is wired up later.)
 
         # Base intent-free similarity score
         u_n, i_n = F.normalize(u, dim=-1), F.normalize(i, dim=-1)
         z_ui = (u_n * i_n).sum(dim=-1)  # [B]
 
         # Vectorized Intent-aware scoring
-        Zu = self.user_intents_padded[user]      # [B, max_ku, d]
-        Zi = self.item_intents_padded[item]      # [B, max_ki, d]
+        # Banks are PRE-NORMALIZED in load_intent_banks(), so gathered slices are
+        # already L2-normalized -> skip per-call F.normalize (big bandwidth save).
+        Zu_n = self.user_intents_padded[user]      # [B, max_ku, d], normalized
+        Zi_n = self.item_intents_padded[item]      # [B, max_ki, d], normalized
 
         Zu_mask = self.user_intents_mask[user]    # [B, max_ku]
         Zi_mask = self.item_intents_mask[item]    # [B, max_ki]
-
-        # Normalize intent tensors
-        Zu_n = F.normalize(Zu, dim=-1)
-        Zi_n = F.normalize(Zi, dim=-1)
 
         # Batched matrix multiplication: [B, max_ku, d] x [B, d, max_ki] -> [B, max_ku, max_ki]
         sims = torch.bmm(Zu_n, Zi_n.transpose(1, 2))
