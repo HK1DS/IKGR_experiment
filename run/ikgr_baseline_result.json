@@ -1,0 +1,54 @@
+{
+  "model": "IKGR",
+  "variant": "intent-bank re-ranking (KGCN/TransH inactive)",
+  "dataset": "ikgr-custom",
+  "timestamp": "2026-06-07_00-28-56",
+  "seed": 2020,
+  "config": {
+    "epochs": 20,
+    "embedding_size": 512,
+    "lambda_mix": 0.1,
+    "dropout": 0.1,
+    "topk": [
+      10,
+      30
+    ],
+    "metrics": [
+      "Recall",
+      "MRR",
+      "NDCG",
+      "Hit",
+      "Precision"
+    ],
+    "max_intents_per_node": 32,
+    "intent_score_chunk": 8192
+  },
+  "n_users": 11074,
+  "n_items": 6858,
+  "best_valid_score": 0.1192,
+  "best_valid_result": {
+    "recall@10": 0.021,
+    "recall@30": 0.0465,
+    "mrr@10": 0.1192,
+    "mrr@30": 0.1312,
+    "ndcg@10": 0.043,
+    "ndcg@30": 0.047,
+    "hit@10": 0.2962,
+    "hit@30": 0.5037,
+    "precision@10": 0.0391,
+    "precision@30": 0.0293
+  },
+  "test_result": {
+    "recall@10": 0.0214,
+    "recall@30": 0.0478,
+    "mrr@10": 0.1247,
+    "mrr@30": 0.1372,
+    "ndcg@10": 0.0453,
+    "ndcg@30": 0.0491,
+    "hit@10": 0.2958,
+    "hit@30": 0.5153,
+    "precision@10": 0.0406,
+    "precision@30": 0.0306
+  },
+  "checkpoint": "run/recbole/IKGR-Jun-07-2026_00-00-46.pth"
+}

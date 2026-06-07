@@ -208,4 +208,8 @@ __marimo__/
 
 # Dataset and Run output files
 data/
-run/
+
+# Ignore run/ contents, but keep benchmark result JSONs tracked
+run/*
+!run/*_result.json
+!run/ikgr_baseline_result.json
