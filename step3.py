@@ -1,51 +1,28 @@
 '''
-Build KG + train/eval IKGR in Recbole. This step is optional if you want to run intent graph KG with other infra.
+Train/eval IKGR (intent-KG recommender) in RecBole.
+
+The model (ikgr_core/model_ikgr.py) loads the intent KG from run/kg_pack.pt
+(build it first with `python build_kg.py`) and enriches user/item embeddings via
+a vectorized propagation over shared intent nodes, scored by inner product (BPR).
+
+Toggle KG on/off for ablation:
+    IKGR_USE_KG=1 python step3.py    # KG on  (default)  -> run/ikgr_kgon_result.json
+    IKGR_USE_KG=0 python step3.py    # KG off (~MF/BPR)  -> run/ikgr_kgoff_result.json
 '''
 
-import os, yaml, torch
+import os, json, time, yaml, torch
 from recbole.config import Config
 from recbole.data import create_dataset, data_preparation
 from recbole.trainer import Trainer
 
 from ikgr_core.model_ikgr import IKGR as IKGRModel
 
-import torch
-
-def _load_bank_pt(path: str):
-    """Load a saved .pt: returns dict(raw_token -> tensor[k,d]), and dim."""
-    pkg = torch.load(path, map_location="cpu")
-    return pkg.get("bank", {}), int(pkg.get("dim", 0))
-
-def _dataset_token2id_map(dataset, field: str):
-    """
-    Build token->internal_id mapping from RecBole dataset.
-    Compatible with multiple versions by trying common attributes.
-    """
-    # Preferred: dataset.field2token_id[field] (dict token->id)
-    try:
-        token2id = dataset.field2token_id[field]
-        if isinstance(token2id, dict):
-            return token2id
-    except Exception:
-        pass
-
-    # Fallback: invert id2token list/array
-    try:
-        id2token = dataset.field2id_token[field]  # array/list by internal id
-        token2id = {str(tok): i for i, tok in enumerate(id2token)}
-        return token2id
-    except Exception:
-        pass
-
-    # Last resort: use dataset.token2id if exists
-    if hasattr(dataset, "token2id") and isinstance(dataset.token2id, dict) and field in dataset.token2id:
-        return dataset.token2id[field]
-
-    raise RuntimeError(f"Cannot build token->id map for field '{field}'. Check RecBole version and dataset.")
 
 def main():
     cfg = yaml.safe_load(open("config.yaml"))
     paths, rb = cfg["paths"], cfg["recbole"]
+
+    use_kg = os.environ.get("IKGR_USE_KG", "1").lower() in ("1", "true", "yes")
 
     config_dict = {
         "epochs": rb["epochs"],
@@ -55,94 +32,62 @@ def main():
         "learning_rate": 1e-3,
         "reg_weight": 1e-6,
         "dropout_prob": rb.get("dropout", 0.1),
-        "lambda_mix": rb["lambda_mix"],
 
-        "data_path": os.path.dirname(paths["inter_file"]),  # directory contains {dataset}.inter/.kg
+        "data_path": os.path.dirname(paths["inter_file"]),  # data/k_core
         "USER_ID_FIELD": "user_id",
         "ITEM_ID_FIELD": "item_id",
         "LABEL_FIELD": "rating",
+        "load_col": {"inter": ["user_id", "item_id", "rating"]},
         "train_neg_sample_args": {"distribution": "uniform"},
-        "save_dataset": True,
+        "save_dataset": False,
+        "save_dataloaders": False,
         "checkpoint_dir": paths["recbole_dump"],
-        # Reproducible baseline record
+        "show_progress": False,
+        # Reproducible record
         "seed": 2020,
         "reproducibility": True,
-        # Evaluate every 5 epochs instead of every epoch: full-sort eval over
-        # ~11k users x 6.8k items is the main time cost (~minutes each).
         "eval_step": 5,
-        # Memory-safety knobs for small-VRAM GPUs (see ikgr_core/model_ikgr.py)
-        # Lower cap frees VRAM so the eval chunk can be larger -> far fewer
-        # forward() calls during full-sort evaluation (the main bottleneck).
-        "max_intents_per_node": 32,
-        "intent_score_chunk": 8192,
+        # ---- IKGR KG settings ----
+        "use_kg": use_kg,
+        "kg_pack_path": os.path.abspath("run/kg_pack.pt"),
     }
 
     config = Config(model=IKGRModel, dataset=rb["dataset"], config_dict=config_dict)
-
     dataset = create_dataset(config)
     train_data, valid_data, test_data = data_preparation(config, dataset)
 
-    user_bank_path = cfg["paths"].get("user_bank_pt", "run/user_bank.pt")
-    item_bank_path = cfg["paths"].get("item_bank_pt", "run/item_bank.pt")
-
-    user_bank_raw, dim_u = _load_bank_pt(user_bank_path) if os.path.exists(user_bank_path) else ({}, 0)
-    item_bank_raw, dim_i = _load_bank_pt(item_bank_path) if os.path.exists(item_bank_path) else ({}, 0)
-
-    # Build token->id maps using RecBole dataset
-    u_field = config["USER_ID_FIELD"] if "USER_ID_FIELD" in config else "user_id"
-    i_field = config["ITEM_ID_FIELD"] if "ITEM_ID_FIELD" in config else "item_id"
-    u_token2id = _dataset_token2id_map(dataset, u_field)
-    i_token2id = _dataset_token2id_map(dataset, i_field)
-
-    # Convert raw-token keyed banks into internal-id keyed banks
-    user_bank_by_id = {}
-    for tok, tensor in user_bank_raw.items():
-        tok_s = str(tok)
-        if tok_s in u_token2id:
-            user_bank_by_id[u_token2id[tok_s]] = tensor
-
-    item_bank_by_id = {}
-    for tok, tensor in item_bank_raw.items():
-        tok_s = str(tok)
-        if tok_s in i_token2id:
-            item_bank_by_id[i_token2id[tok_s]] = tensor
-
-    print(f"[banks] users={len(user_bank_by_id)} items={len(item_bank_by_id)} (mapped to internal ids)")
-
-    # ===== construct model and inject banks =====
     model = IKGRModel(config, train_data.dataset).to(config["device"])
-    # move tensors to device
-    dev = config["device"]
-    user_bank_by_id = {k: v.to(dev) for k, v in user_bank_by_id.items()}
-    item_bank_by_id = {k: v.to(dev) for k, v in item_bank_by_id.items()}
-    model.load_intent_banks(user_bank_by_id, item_bank_by_id)
+    print(f"[IKGR] use_kg={use_kg} | n_users={model.n_users} n_items={model.n_items}"
+          + (f" n_intents={model.n_intents}" if use_kg else ""), flush=True)
 
-
-    
     trainer = Trainer(config, model)
-    best_valid_score, best_valid_result = trainer.fit(train_data, valid_data)
-    test_result = trainer.evaluate(test_data)
+    best_valid_score, best_valid_result = trainer.fit(
+        train_data, valid_data, saved=True, show_progress=False
+    )
+    try:
+        test_result = trainer.evaluate(test_data, load_best_model=True, show_progress=False)
+    except FileNotFoundError:
+        test_result = trainer.evaluate(test_data, load_best_model=False, show_progress=False)
 
     print("[valid]", best_valid_result)
     print("[test ]", test_result)
 
-    # ---- Persist a reproducible baseline record (IKGR standalone) ----
-    import json, time
+    variant = "intent-KG (propagation on)" if use_kg else "no-KG (MF/BPR baseline)"
     record = {
         "model": "IKGR",
-        "variant": "intent-bank re-ranking (KGCN/TransH inactive)",
+        "variant": variant,
+        "use_kg": use_kg,
         "dataset": rb["dataset"],
         "timestamp": time.strftime("%Y-%m-%d_%H-%M-%S"),
-        "seed": config_dict.get("seed"),
+        "seed": config_dict["seed"],
         "config": {
             "epochs": rb["epochs"],
             "embedding_size": rb["embedding_size"],
-            "lambda_mix": rb["lambda_mix"],
             "dropout": rb.get("dropout", 0.1),
+            "learning_rate": 1e-3,
+            "reg_weight": 1e-6,
             "topk": rb["topk"],
             "metrics": rb["metrics"],
-            "max_intents_per_node": int(config["max_intents_per_node"]) if "max_intents_per_node" in config else 64,
-            "intent_score_chunk": int(config["intent_score_chunk"]) if "intent_score_chunk" in config else 2048,
         },
         "n_users": int(dataset.user_num),
         "n_items": int(dataset.item_num),
@@ -151,10 +96,12 @@ def main():
         "test_result": {k: float(v) for k, v in test_result.items()},
         "checkpoint": getattr(trainer, "saved_model_file", None),
     }
-    out_path = os.path.join(paths["workdir"], "ikgr_baseline_result.json")
+    tag = "kgon" if use_kg else "kgoff"
+    out_path = os.path.join(paths["workdir"], f"ikgr_{tag}_result.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(record, f, ensure_ascii=False, indent=2)
-    print(f"[step3] baseline record saved: {out_path}")
+    print(f"[step3] result saved: {out_path}", flush=True)
+
 
 if __name__ == "__main__":
     main()

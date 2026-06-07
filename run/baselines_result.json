@@ -1,0 +1,75 @@
+{
+  "Pop": {
+    "time_sec": 27.2,
+    "embedding_size": 512,
+    "best_valid_result": {},
+    "test_result": {
+      "recall@10": 0.0765,
+      "recall@30": 0.1417,
+      "mrr@10": 0.3626,
+      "mrr@30": 0.3721,
+      "ndcg@10": 0.1541,
+      "ndcg@30": 0.1531,
+      "hit@10": 0.6471,
+      "hit@30": 0.8048,
+      "precision@10": 0.1334,
+      "precision@30": 0.0841
+    }
+  },
+  "BPR": {
+    "time_sec": 140.1,
+    "embedding_size": 512,
+    "best_valid_result": {
+      "recall@10": 0.1265,
+      "recall@30": 0.2607,
+      "mrr@10": 0.4594,
+      "mrr@30": 0.4668,
+      "ndcg@10": 0.2266,
+      "ndcg@30": 0.2536,
+      "hit@10": 0.8536,
+      "hit@30": 0.9678,
+      "precision@10": 0.2114,
+      "precision@30": 0.1515
+    },
+    "test_result": {
+      "recall@10": 0.1537,
+      "recall@30": 0.2876,
+      "mrr@10": 0.5661,
+      "mrr@30": 0.5719,
+      "ndcg@10": 0.2953,
+      "ndcg@30": 0.3024,
+      "hit@10": 0.8819,
+      "hit@30": 0.9725,
+      "precision@10": 0.2634,
+      "precision@30": 0.1705
+    }
+  },
+  "LightGCN": {
+    "time_sec": 227.2,
+    "embedding_size": 512,
+    "best_valid_result": {
+      "recall@10": 0.1217,
+      "recall@30": 0.2491,
+      "mrr@10": 0.4597,
+      "mrr@30": 0.4672,
+      "ndcg@10": 0.2267,
+      "ndcg@30": 0.2478,
+      "hit@10": 0.8469,
+      "hit@30": 0.965,
+      "precision@10": 0.2102,
+      "precision@30": 0.1491
+    },
+    "test_result": {
+      "recall@10": 0.1484,
+      "recall@30": 0.2772,
+      "mrr@10": 0.5631,
+      "mrr@30": 0.5695,
+      "ndcg@10": 0.2964,
+      "ndcg@30": 0.2983,
+      "hit@10": 0.8671,
+      "hit@30": 0.9688,
+      "precision@10": 0.2638,
+      "precision@30": 0.1708
+    }
+  }
+}

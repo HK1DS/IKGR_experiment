@@ -1,0 +1,54 @@
+{
+  "model": "IKGR",
+  "variant": "intent-KG (propagation on)",
+  "use_kg": true,
+  "dataset": "ikgr-custom",
+  "timestamp": "2026-06-07_17-39-08",
+  "seed": 2020,
+  "config": {
+    "epochs": 20,
+    "embedding_size": 512,
+    "dropout": 0.1,
+    "learning_rate": 0.001,
+    "reg_weight": 1e-06,
+    "topk": [
+      10,
+      30
+    ],
+    "metrics": [
+      "Recall",
+      "MRR",
+      "NDCG",
+      "Hit",
+      "Precision"
+    ]
+  },
+  "n_users": 11074,
+  "n_items": 6858,
+  "best_valid_score": 0.4445,
+  "best_valid_result": {
+    "recall@10": 0.1221,
+    "recall@30": 0.2542,
+    "mrr@10": 0.4445,
+    "mrr@30": 0.4528,
+    "ndcg@10": 0.2174,
+    "ndcg@30": 0.2452,
+    "hit@10": 0.8377,
+    "hit@30": 0.9651,
+    "precision@10": 0.2027,
+    "precision@30": 0.1464
+  },
+  "test_result": {
+    "recall@10": 0.148,
+    "recall@30": 0.2788,
+    "mrr@10": 0.5469,
+    "mrr@30": 0.5533,
+    "ndcg@10": 0.281,
+    "ndcg@30": 0.2903,
+    "hit@10": 0.8719,
+    "hit@30": 0.9719,
+    "precision@10": 0.2514,
+    "precision@30": 0.1637
+  },
+  "checkpoint": "run/recbole/IKGR-Jun-07-2026_17-14-08.pth"
+}

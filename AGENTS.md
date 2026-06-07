@@ -11,7 +11,44 @@
 | Step C | step2 — RAG 의도 확장 | ✅ **완료** (`run/step2_related_intents.csv`, 11,073행 전부 채워짐 / related 평균 user 14.15·item 14.58개) |
 | Step D | 임베딩 뱅크 + RecBole 포맷 변환 | ✅ **완료** (`run/user_bank.pt` 11,073×768, `run/item_bank.pt` 6,857×768, `data/k_core/ikgr-custom/{inter,kg}` 배치 완료) |
 | Step E | step3 — IKGR GNN 학습/평가 | ✅ **완료** (baseline 기록: `run/ikgr_baseline_result.json` / test NDCG@10 0.045, Hit@10 0.296, MRR@10 0.125) |
-| 다음 | DynLLM 전처리/구현 | ⬜ 대기 |
+| 참조 baseline | Pop/BPR/LightGCN (동일 split) | ✅ **완료** (`run/baselines_result.json`, `run_baselines.py`) — 아래 ⚠️ 중요 발견 참고 |
+| 다음 | **IKGR 스코어/KG 수정 (최우선)** → 슬라이스 평가 → DynLLM | ⬜ 대기 |
+
+### ✅ 해결됨 — IKGR 재설계로 0.045 → 0.29대 (BPR/LightGCN 동급). 단 KG는 overall에선 도움 안 됨
+**구버전 IKGR 스코어 버그(확정):** `score = y_ui(intent max-cos, 고정 휴리스틱 0.5~1.0) + 0.1·z_ui(임베딩)`에서 고정 휴리스틱이 랭킹을 지배 + penalty cliff(0.9)로 유저당 수백~1000+ 아이템이 top에 동점 → top-10 사실상 랜덤 → Pop보다 낮음. (진단 수치: y_val 평균0.804, 22.5%>0.9; y_ui 분산0.257 ≫ λ상한0.1)
+
+**재설계(현재 코드):** 고정 휴리스틱 제거. 공유 **학습 가능 intent 노드**(`run/kg_pack.pt`, mpnet 초기화+학습 투영) + 희소 user/item→intent 인접행렬 + 벡터화 1-layer 전파(`u'=e_u+α·Â_u·E_int`) + **내적 BPR** 학습. `use_kg` 토글로 ablation. 부수효과로 평가도 내적이라 수초로 빨라짐(기존 4.6분 병목 해소).
+
+**전체 비교 (동일 split·seed=2020·emb=512, test):**
+| 모델 | NDCG@10 | Recall@10 | MRR@10 | Hit@10 |
+|---|---|---|---|---|
+| IKGR 구버전(KG-off 휴리스틱, 버그) | 0.045 | 0.021 | 0.125 | 0.296 |
+| Pop | 0.154 | 0.077 | 0.363 | 0.647 |
+| **IKGR 신버전 KG-off (=MF)** | **0.294** | 0.153 | 0.565 | 0.879 |
+| BPR | 0.295 | 0.154 | 0.566 | 0.882 |
+| LightGCN | 0.296 | 0.148 | 0.563 | 0.867 |
+| **IKGR 신버전 KG-on** | **0.281** | 0.148 | 0.547 | 0.872 |
+
+* KG-off(MF) 0.294 ≈ BPR 0.295 → 구현 정상 sanity check 통과.
+* **KG-on(0.281) < KG-off(0.294)**: dense k=100에선 intent KG 전파가 overall을 살짝 떨어뜨림(일반적 intent 평균 전파가 강한 CF 신호를 희석). **예상된 결과** — intent/KG 가치는 overall이 아니라 cold-start/long-tail 슬라이스에서 봐야 함.
+* 결과 파일: `run/ikgr_kgon_result.json`, `run/ikgr_kgoff_result.json`. 재현: `IKGR_USE_KG=1|0 python step3.py` (KG는 `python build_kg.py`로 `run/kg_pack.pt` 선생성 필요).
+
+**다음 작업 (최우선): cold-start/long-tail 슬라이스 평가.** 유저 인터랙션 수 / 아이템 인기도로 test를 슬라이스해 KG-on vs KG-off vs BPR/LightGCN 비교. 여기서 KG-on이 이기면 그게 졸업작품의 핵심 주장. (이후 α 튜닝, k=20/30 코어 재고, DynLLM/CORONA.)
+
+### (이전 기록) 참조 baseline 비교 — 현재는 위 표로 대체됨
+| 모델 | NDCG@10 | Recall@10 | MRR@10 | Hit@10 | 학습시간 |
+|---|---|---|---|---|---|
+| **IKGR (KG off)** | **0.045** | 0.021 | 0.125 | 0.296 | ~30분 |
+| Pop | 0.154 | 0.077 | 0.363 | 0.647 | 27초 |
+| BPR | 0.295 | 0.154 | 0.566 | 0.882 | 140초 |
+| LightGCN | 0.296 | 0.148 | 0.563 | 0.867 | 227초 |
+
+**진단:**
+1. IKGR(KG off)이 Pop보다도 낮음 = **버그 수준**. 원인 가설: 스코어 `y_ui(intent max-cos, 고정 휴리스틱) + λ·z_ui(임베딩)`에서 **학습되는 건 임베딩뿐인데 λ=0.1이라 고정 휴리스틱 y_ui가 랭킹을 지배** → BPR loss로 배우는 부분이 무력화. KG도 미사용 상태. **즉 아직 IKGR을 제대로 테스트한 적이 없음.**
+2. **싸움터 문제**: k=100은 dense(유저당 평균 225 인터랙션)라 CF(BPR/LightGCN)가 압도적. LLM-intent/KG의 강점은 cold-start/long-tail/sparse 구간 → **overall NDCG로 dense에서 붙는 건 CF 홈그라운드**. 프레임워크 강점은 슬라이스 평가에서 봐야 함(졸업작품 주장도 cold-start/long-tail).
+3. **다음 작업 우선순위**: (1) IKGR 스코어/KG 수정해 최소 Pop·가능하면 BPR 근처까지 끌어올리기(선행 필수) → (2) cold-start 유저/long-tail 아이템 슬라이스 평가 틀 → (3) 필요시 k=20/30 코어 재고 → 이후 DynLLM/CORONA.
+
+**참조 baseline 재현:** `python run_baselines.py` (Pop/BPR/LightGCN, `run/recbole_baselines/`에 격리 빌드). RecBole 1.2.0+scipy 1.17 호환 위해 `dok_matrix._update = dict.update` monkeypatch 포함. Pop은 best_valid_result None이라 None-안전 처리됨.
 
 ---
 

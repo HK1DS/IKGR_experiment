@@ -112,222 +112,147 @@ def _cfg(config, key: str, default):
 
 class IKGR(GeneralRecommender):
     """
-    Minimal IKGR model:
-      - user/item base embeddings
-      - one KGCN layer touching global entity table (neighbors should be loaded in production)
-      - TransH params present (you can add KG loss with real triples)
-      - intent-aware hybrid scoring at inference
+    IKGR (intent knowledge-graph recommender), redesigned to be LEARNABLE and to
+    actually use the intent KG:
+
+      - Base learnable user/item embeddings (like MF/BPR).
+      - Shared learnable INTENT NODES initialized from the LLM/mpnet intent
+        embeddings (run/kg_pack.pt) via a learnable projection.
+      - One vectorized KGCN-style propagation layer: each user/item embedding is
+        enriched by the (row-normalized) mean of its connected intent-node
+        embeddings -> u' = e_u + a * (A_u_hat @ E_intent), i' = e_i + a * ...
+      - Score = <u', i'> (inner product), trained with BPR. No frozen heuristic.
+
+    Set `use_kg=False` to disable propagation (-> plain MF/BPR), which gives the
+    KG-on vs KG-off ablation with everything else identical.
+
+    Why the rewrite: the previous version scored y_ui (frozen max-cosine over
+    intent pairs, range ~0.5-1.0) + 0.1*cos(emb). The frozen term dominated and
+    saturated (a 0.9 penalty cliff tied hundreds of items at the top per user),
+    so the learnable signal was suppressed and it ranked below Pop.
     """
-    # choose pairwise by default (BPR-like); switch to POINTWISE if needed
     input_type = InputType.PAIRWISE
 
     def __init__(self, config, dataset):
         super().__init__(config, dataset)
 
         self.embed_dim = int(_cfg(config, "embedding_size", 64))
-        self.lambda_mix = float(_cfg(config, "lambda_mix", 0.1))
         self.dropout = float(_cfg(config, "dropout_prob", 0.1))
-        # Memory-safety knobs (important on small-VRAM GPUs):
-        #  - max_intents_per_node: cap intents kept per user/item (padding width).
-        #    Mean ~25, p99 ~50, max ~111; cap=64 covers >99% with far less VRAM.
-        #  - intent_score_chunk: rows processed per chunk in forward() to bound the
-        #    [chunk, max_ku, max_ki] bmm during full-sort evaluation.
-        self.max_intents = int(_cfg(config, "max_intents_per_node", 64))
-        self.intent_chunk = int(_cfg(config, "intent_score_chunk", 2048))
+        self.reg_weight = float(_cfg(config, "reg_weight", 1e-6))
+        self.use_kg = bool(_cfg(config, "use_kg", True))
+        self.kg_pack_path = _cfg(config, "kg_pack_path", "run/kg_pack.pt")
 
-        num_users, num_items = self.n_users, self.n_items
-
-        # Base embeddings
-        self.user_embedding = nn.Embedding(num_users, self.embed_dim)
-        self.item_embedding = nn.Embedding(num_items, self.embed_dim)
-
-        # Global entity/relation tables (toy; can be merged with user/item tables)
-        self.entity_embeddings = nn.Embedding(num_users + num_items, self.embed_dim)
-        self.relation_embeddings = nn.Embedding(3, self.embed_dim)  # user_has_intent, item_has_intent, user_consumes_item
-
-        self.kgcn = KGCNLayer(self.embed_dim)
-        self.transh = TransHScore(self.embed_dim, num_rel=3)
-
+        n_users, n_items = self.n_users, self.n_items
+        self.user_embedding = nn.Embedding(n_users, self.embed_dim)
+        self.item_embedding = nn.Embedding(n_items, self.embed_dim)
+        nn.init.xavier_uniform_(self.user_embedding.weight)
+        nn.init.xavier_uniform_(self.item_embedding.weight)
         self.dropout_layer = nn.Dropout(self.dropout)
-        self._reset_parameters()
 
-        # Placeholder neighbor list for KGCN; in production, fill from KG adjacency
-        self.neighbors = [[] for _ in range(num_users + num_items)]
+        self._kg_ready = False
+        if self.use_kg:
+            self._build_kg(dataset)
 
-        # Intent banks: map internal user/item ids to intent embedding tensors [k, d]
-        self.user_intent_bank = {}
-        self.item_intent_bank = {}
+    # ---- KG construction (intent nodes + sparse user/item -> intent adjacency)
+    def _build_kg(self, dataset):
+        pack = torch.load(self.kg_pack_path, map_location="cpu")
+        intent_emb = pack["intent_emb"].float()      # [n_intents, in_dim]
+        self.n_intents = int(pack["n_intents"])
+        in_dim = intent_emb.shape[1]
 
-    def _reset_parameters(self):
-        for m in [self.user_embedding, self.item_embedding, self.entity_embeddings]:
-            if isinstance(m, nn.Embedding):
-                nn.init.xavier_uniform_(m.weight)
-        nn.init.xavier_uniform_(self.relation_embeddings.weight)
+        # Frozen semantic init + learnable projection to embed_dim.
+        self.register_buffer("intent_emb_raw", intent_emb)
+        self.intent_proj = nn.Linear(in_dim, self.embed_dim, bias=False)
+        nn.init.xavier_uniform_(self.intent_proj.weight)
+        # Learnable scalar gate on the intent contribution.
+        self.intent_alpha = nn.Parameter(torch.tensor(1.0))
 
-    # Optional: hook to preload intent banks
-    def load_intent_banks(self, user_bank: dict, item_bank: dict):
-        """
-        user_bank: Dict[int, torch.Tensor(k,d)]
-        item_bank: Dict[int, torch.Tensor(k,d)]
-        """
-        self.user_intent_bank = user_bank
-        self.item_intent_bank = item_bank
+        u_tok2id = dataset.field2token_id[self.USER_ID]
+        i_tok2id = dataset.field2token_id[self.ITEM_ID]
 
-        # Pre-build 3D padded tensors to avoid slow python loops during training/eval
-        device = self.user_embedding.weight.device
+        def build_adj(token_intents, tok2id, n_rows):
+            rows, cols, vals = [], [], []
+            for tok, ids in token_intents.items():
+                rid = tok2id.get(str(tok))
+                if rid is None:
+                    continue
+                ids = ids.tolist() if torch.is_tensor(ids) else list(ids)
+                k = len(ids)
+                if k == 0:
+                    continue
+                w = 1.0 / k  # row-normalized -> mean of connected intent nodes
+                for j in ids:
+                    rows.append(rid); cols.append(j); vals.append(w)
+            idx = torch.tensor([rows, cols], dtype=torch.long)
+            val = torch.tensor(vals, dtype=torch.float32)
+            return idx, val
 
-        cap = self.max_intents
+        au_idx, au_val = build_adj(pack["user_intents"], u_tok2id, self.n_users)
+        ai_idx, ai_val = build_adj(pack["item_intents"], i_tok2id, self.n_items)
+        # Store COO pieces as buffers so .to(device) moves them with the model.
+        self.register_buffer("A_u_idx", au_idx)
+        self.register_buffer("A_u_val", au_val)
+        self.register_buffer("A_i_idx", ai_idx)
+        self.register_buffer("A_i_val", ai_val)
+        self._kg_ready = True
 
-        def _cap(t):
-            # Keep at most `cap` intents per node to bound padding width / VRAM.
-            return t[:cap] if (t is not None and t.shape[0] > cap) else t
-
-        # 1) User Padded Tensor
-        user_lists = [_cap(user_bank.get(u, torch.zeros(1, 768, device=device))) for u in range(self.n_users)]
-        intent_dim = user_lists[0].shape[1] if user_lists else 768
-        max_ku = max(u.shape[0] for u in user_lists) if user_lists else 1
-        self.user_intents_padded = torch.zeros(self.n_users, max_ku, intent_dim, device=device)
-        self.user_intents_mask = torch.zeros(self.n_users, max_ku, device=device, dtype=torch.bool)
-        for u in range(self.n_users):
-            k = user_lists[u].shape[0]
-            if k > 0 and user_bank.get(u) is not None:
-                self.user_intents_padded[u, :k, :] = user_lists[u].to(device)
-                self.user_intents_mask[u, :k] = True
-
-        # 2) Item Padded Tensor
-        item_lists = [_cap(item_bank.get(i, torch.zeros(1, intent_dim, device=device))) for i in range(self.n_items)]
-        max_ki = max(i.shape[0] for i in item_lists) if item_lists else 1
-        self.item_intents_padded = torch.zeros(self.n_items, max_ki, intent_dim, device=device)
-        self.item_intents_mask = torch.zeros(self.n_items, max_ki, device=device, dtype=torch.bool)
-        for i in range(self.n_items):
-            k = item_lists[i].shape[0]
-            if k > 0 and item_bank.get(i) is not None:
-                self.item_intents_padded[i, :k, :] = item_lists[i].to(device)
-                self.item_intents_mask[i, :k] = True
-
-        # Pre-normalize the intent banks ONCE (L2 along feature dim). Zero-padded
-        # rows stay zero under F.normalize (divides by max(||x||, eps)). This lets
-        # forward() skip per-call normalization of the gathered [chunk, k, d]
-        # tensors, which was the dominant memory-bandwidth cost during full-sort
-        # evaluation. Padded rows are masked out downstream regardless.
-        self.user_intents_padded = F.normalize(self.user_intents_padded, dim=-1)
-        self.item_intents_padded = F.normalize(self.item_intents_padded, dim=-1)
+    def _propagate(self):
+        """Return (u_all, i_all): [n_users, d], [n_items, d] enriched embeddings."""
+        if not (self.use_kg and self._kg_ready):
+            return self.user_embedding.weight, self.item_embedding.weight
+        E_int = self.intent_proj(self.intent_emb_raw)  # [n_intents, d]
+        A_u = torch.sparse_coo_tensor(self.A_u_idx, self.A_u_val,
+                                      (self.n_users, self.n_intents))
+        A_i = torch.sparse_coo_tensor(self.A_i_idx, self.A_i_val,
+                                      (self.n_items, self.n_intents))
+        u_agg = torch.sparse.mm(A_u, E_int)            # [n_users, d]
+        i_agg = torch.sparse.mm(A_i, E_int)            # [n_items, d]
+        u_all = self.user_embedding.weight + self.intent_alpha * u_agg
+        i_all = self.item_embedding.weight + self.intent_alpha * i_agg
+        return u_all, i_all
 
     def forward(self, user, item):
-        """
-        user: [B] internal user ids
-        item: [B] internal item ids
-        """
-        # Chunk evaluation input if batch size is too large to prevent VRAM OOM / paging
-        batch_size = user.shape[0]
-        max_chunk = self.intent_chunk
-        if batch_size > max_chunk:
-            scores_list = []
-            for start in range(0, batch_size, max_chunk):
-                end = min(start + max_chunk, batch_size)
-                u_chunk = user[start:end]
-                i_chunk = item[start:end]
-                scores_list.append(self.forward(u_chunk, i_chunk))
-            return torch.cat(scores_list, dim=0)
-
-        u = self.user_embedding(user)  # [B, d]
-        i = self.item_embedding(item)  # [B, d]
-        u = self.dropout_layer(u)
-        i = self.dropout_layer(i)
-
-        # NOTE: A previous version called `self.kgcn(E, R, self.neighbors)` here
-        # "to let the KGCN params train". With empty neighbors it contributes
-        # nothing to the score, yet its per-node Python loop (N = n_users+n_items
-        # index-assignments) built an ~18k-deep autograd graph whose backward
-        # recursion overflowed the Windows stack (exit 0xC00000FD). Since the
-        # KGCN/TransH/entity/relation params are unused by the score anyway, the
-        # call is removed. (Re-introduce a *vectorized* KGCN if real KG neighbor
-        # aggregation is wired up later.)
-
-        # Base intent-free similarity score
-        u_n, i_n = F.normalize(u, dim=-1), F.normalize(i, dim=-1)
-        z_ui = (u_n * i_n).sum(dim=-1)  # [B]
-
-        # Vectorized Intent-aware scoring
-        # Banks are PRE-NORMALIZED in load_intent_banks(), so gathered slices are
-        # already L2-normalized -> skip per-call F.normalize (big bandwidth save).
-        Zu_n = self.user_intents_padded[user]      # [B, max_ku, d], normalized
-        Zi_n = self.item_intents_padded[item]      # [B, max_ki, d], normalized
-
-        Zu_mask = self.user_intents_mask[user]    # [B, max_ku]
-        Zi_mask = self.item_intents_mask[item]    # [B, max_ki]
-
-        # Batched matrix multiplication: [B, max_ku, d] x [B, d, max_ki] -> [B, max_ku, max_ki]
-        sims = torch.bmm(Zu_n, Zi_n.transpose(1, 2))
-
-        # Mask out padded intent slots
-        mask_2d = Zu_mask.unsqueeze(2) & Zi_mask.unsqueeze(1)
-        sims = torch.where(mask_2d, sims, torch.tensor(-1e9, device=sims.device))
-
-        # Max similarity over all intent pairs
-        y_val = sims.view(user.shape[0], -1).max(dim=-1)[0]  # [B]
-
-        # Zero out invalid values
-        y_val = torch.where(y_val < -1.0, torch.zeros_like(y_val), y_val)
-
-        # Overlap penalty
-        penalty = torch.where(y_val > 0.9, 1.0, 0.5)
-        y_ui = y_val * penalty
-
-        return y_ui + self.lambda_mix * z_ui
+        u_all, i_all = self._propagate()
+        u = self.dropout_layer(u_all[user])
+        i = self.dropout_layer(i_all[item])
+        return (u * i).sum(dim=-1)
 
     def calculate_loss(self, interaction):
-        """
-        Prefer pairwise BPR if NEG_ITEM_ID exists in interaction.
-        Otherwise fall back to pointwise BCE using LABEL_FIELD from config.
-        """
         user = interaction[self.USER_ID]
-        item = interaction[self.ITEM_ID]
-        pos_score = self.forward(user, item)
+        pos = interaction[self.ITEM_ID]
+        u_all, i_all = self._propagate()
+        u = u_all[user]
+        pos_e = i_all[pos]
+        pos_score = (u * pos_e).sum(dim=-1)
 
-        # ---- Pairwise branch (BPR) if negative items are provided
         has_neg = hasattr(self, "NEG_ITEM_ID") and (self.NEG_ITEM_ID in interaction)
         if has_neg:
-            neg_item = interaction[self.NEG_ITEM_ID]
-            neg_score = self.forward(user, neg_item)
-            loss = -torch.log(torch.sigmoid(pos_score - neg_score) + 1e-12).mean()
-            return loss
-
-        # ---- Pointwise branch (BCE) otherwise
-        # Robustly resolve label field name
-        if hasattr(self, "LABEL"):
-            label_field = self.LABEL  # some RecBole versions expose this alias
+            neg = interaction[self.NEG_ITEM_ID]
+            neg_e = i_all[neg]
+            neg_score = (u * neg_e).sum(dim=-1)
+            loss = -F.logsigmoid(pos_score - neg_score).mean()
+            reg = (u.norm(2).pow(2) + pos_e.norm(2).pow(2) + neg_e.norm(2).pow(2))
         else:
-            # fall back to config
-            if "LABEL_FIELD" in self.config:
+            if hasattr(self, "LABEL"):
+                label_field = self.LABEL
+            elif "LABEL_FIELD" in self.config:
                 label_field = self.config["LABEL_FIELD"]
             else:
-                raise KeyError(
-                    "Pointwise training requires LABEL_FIELD in config, "
-                    "but neither self.LABEL nor config['LABEL_FIELD'] is available."
-                )
+                raise KeyError("Pointwise training requires LABEL_FIELD in config.")
+            label = interaction[label_field].float()
+            loss = F.binary_cross_entropy_with_logits(pos_score, label)
+            reg = (u.norm(2).pow(2) + pos_e.norm(2).pow(2))
 
-        if label_field not in interaction:
-            raise KeyError(
-                f"Interaction does not contain label field '{label_field}'. "
-                f"Available keys: {list(interaction.keys())}"
-            )
-
-        label = interaction[label_field].float()
-        return F.binary_cross_entropy_with_logits(pos_score, label)
-
-
+        return loss + self.reg_weight * reg / user.shape[0]
 
     def predict(self, interaction):
-        user = interaction[self.USER_ID]
-        item = interaction[self.ITEM_ID]
-        return self.forward(user, item)
+        u_all, i_all = self._propagate()
+        u = u_all[interaction[self.USER_ID]]
+        i = i_all[interaction[self.ITEM_ID]]
+        return (u * i).sum(dim=-1)
 
     def full_sort_predict(self, interaction):
-        user = interaction[self.USER_ID]  # [B]
-        all_items = torch.arange(self.n_items, device=user.device)  # [I]
-        user_expand = user.view(-1, 1).repeat(1, self.n_items).view(-1)  # [B*I]
-        items_expand = all_items.unsqueeze(0).repeat(user.shape[0], 1).view(-1)  # [B*I]
-        scores = self.forward(user_expand, items_expand).view(-1, self.n_items)
-        return scores
+        u_all, i_all = self._propagate()
+        u = u_all[interaction[self.USER_ID]]      # [B, d]
+        return torch.matmul(u, i_all.t())          # [B, n_items]
 
