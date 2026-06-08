@@ -33,7 +33,20 @@
 * **KG-on(0.281) < KG-off(0.294)**: dense k=100에선 intent KG 전파가 overall을 살짝 떨어뜨림(일반적 intent 평균 전파가 강한 CF 신호를 희석). **예상된 결과** — intent/KG 가치는 overall이 아니라 cold-start/long-tail 슬라이스에서 봐야 함.
 * 결과 파일: `run/ikgr_kgon_result.json`, `run/ikgr_kgoff_result.json`. 재현: `IKGR_USE_KG=1|0 python step3.py` (KG는 `python build_kg.py`로 `run/kg_pack.pt` 선생성 필요).
 
-**다음 작업 (최우선): cold-start/long-tail 슬라이스 평가.** 유저 인터랙션 수 / 아이템 인기도로 test를 슬라이스해 KG-on vs KG-off vs BPR/LightGCN 비교. 여기서 KG-on이 이기면 그게 졸업작품의 핵심 주장. (이후 α 튜닝, k=20/30 코어 재고, DynLLM/CORONA.)
+### ✅ 슬라이스 평가 완료 (`eval_slices.py` → `run/slice_eval_result.json`)
+동일 split·seed·emb=512. long-tail = 인기 하위 80% 아이템(컷 pop 384.8, 6858중 ~5487개). cold = 유저 활동도(마스킹 히스토리 수) 분위수 버킷.
+
+| 모델 | overall NDCG@10 | tail Recall@10 | tail Recall@30 |
+|---|---|---|---|
+| IKGR KG-on | 0.274 | **0.0734** | **0.1415** |
+| IKGR KG-off | 0.293 | 0.0704 | 0.1346 |
+| BPR | 0.294 | 0.0581 | 0.1160 |
+| LightGCN | 0.295 | 0.0450 | 0.0934 |
+
+**발견 1 (긍정):** long-tail Recall에서 **KG-on > KG-off > BPR > LightGCN** (순서 깨끗, @10·@30 모두). KG-on tail Recall@10은 LightGCN 대비 +63%, BPR +26%, KG-off +4~5%. → "intent KG가 long-tail/niche 추천을 돕는다" 주장 성립. overall 최강(LightGCN)이 tail 최약 = 정확도-꼬리 트레이드오프.
+**발견 2 (제약):** cold-start는 **이 데이터로 측정 불가** — 활동도 Q1(가장 cold) 컷이 105 인터랙션 → k=100 코어가 진짜 cold 유저를 전부 제거함. cold 버킷에선 KG-on이 KG-off 못 이김(cold가 아니므로).
+
+**다음 작업 (최우선): k=20 또는 k=30 코어로 재구축.** (1) 진짜 cold-start 유저 생성 → cold-start 주장 검증, (2) long-tail 보존 강화, (3) sparse라 intent KG가 overall에서도 도움될 가능성. 비용↑ → Qwen-turbo/DeepSeek 전환 고려(§1 비용 메모). 이후 α 튜닝, DynLLM/CORONA.
 
 ### (이전 기록) 참조 baseline 비교 — 현재는 위 표로 대체됨
 | 모델 | NDCG@10 | Recall@10 | MRR@10 | Hit@10 | 학습시간 |
