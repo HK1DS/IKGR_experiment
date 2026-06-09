@@ -202,8 +202,8 @@ def main():
     kg = os.path.abspath("run/kg_pack.pt")
     all_specs = {
         "IKGR_kgoff":   (IKGRModel, {"use_kg": False}),
-        "IKGR_kgon_L1": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1}),
-        "IKGR_kgon_L2": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 2}),
+        "IKGR_kgon_L1": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32}),
+        "IKGR_kgon_L2": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 2, "kg_cap": 32}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }

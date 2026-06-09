@@ -46,7 +46,23 @@
 **발견 1 (긍정):** long-tail Recall에서 **KG-on > KG-off > BPR > LightGCN** (순서 깨끗, @10·@30 모두). KG-on tail Recall@10은 LightGCN 대비 +63%, BPR +26%, KG-off +4~5%. → "intent KG가 long-tail/niche 추천을 돕는다" 주장 성립. overall 최강(LightGCN)이 tail 최약 = 정확도-꼬리 트레이드오프.
 **발견 2 (제약):** cold-start는 **이 데이터로 측정 불가** — 활동도 Q1(가장 cold) 컷이 105 인터랙션 → k=100 코어가 진짜 cold 유저를 전부 제거함. cold 버킷에선 KG-on이 KG-off 못 이김(cold가 아니므로).
 
-**다음 작업 (최우선): k=20 또는 k=30 코어로 재구축.** (1) 진짜 cold-start 유저 생성 → cold-start 주장 검증, (2) long-tail 보존 강화, (3) sparse라 intent KG가 overall에서도 도움될 가능성. 비용↑ → Qwen-turbo/DeepSeek 전환 고려(§1 비용 메모). 이후 α 튜닝, DynLLM/CORONA.
+### ⚠️ 다중 시드 robustness 결과 (12 epochs, seeds 2020/2021/2022) — 단일시드 long-tail 우위는 robust하지 않았음
+`eval_slices.py` (multi-seed, mean±std, coverage/novelty 추가). 모델 강화: intent 노드를 독립 학습(`intent_learnable`) + multi-layer(`kg_layers`) + 미니배치 gather(`kg_cap`) 지원. **주의: 학습 epochs=12 (이전 단일시드 표는 20) → 수치 직접 비교 불가, 이 표 내부만 비교.**
+
+| 모델 | overall NDCG@10 | tail Recall@10 | tail Recall@30 | coverage@10 | novelty |
+|---|---|---|---|---|---|
+| IKGR KG-off (MF) | 0.2922±.0009 | 0.0597±.0008 | 0.1180±.0010 | 0.640 | 10.68 |
+| IKGR KG-on L1(학습노드) | 0.2423±.0030 | 0.0585±.0104 | 0.1140±.0155 | 0.738±.087 | 10.97 |
+| BPR | 0.2935±.0021 | 0.0600±.0015 | 0.1186±.0013 | 0.643 | 10.67 |
+| LightGCN(12ep, 저평가) | 0.2585±.0017 | 0.0276±.0005 | 0.0566±.0006 | 0.303 | 9.94 |
+
+**핵심 교훈:** 단일시드에서 본 KG-on long-tail 우위(0.0734)는 **재현 안 됨**. 3시드 평균 tail Recall@10은 KG-on 0.0585 ≈ KG-off/BPR 0.0597/0.0600 (동률), 게다가 **분산 ±18%로 매우 불안정**(seed 2021은 0.044로 붕괴). 학습 가능 intent 노드(27M 파라미터)의 instability가 원인 추정.
+**유일하게 일관된 KG 효과 = coverage/novelty↑** (cov 0.738 vs 0.640, +15%; LightGCN은 0.303으로 popularity bias 확정). 단 이것도 분산 큼. **즉 현 IKGR의 검증된 기여는 "정확도"가 아니라 "추천 다양성/coverage"** (overall 정확도는 희생).
+
+**다음 후보:**
+1. **frozen-proj 변형 multi-seed** (`intent_learnable=False`) — instability가 학습노드 탓인지 검증. 커밋된 단일시드 0.0734는 frozen-proj였음 → 더 안정적일 가능성.
+2. α/reg/epochs 안정화, kg_layers=2 (smoke에서 cov 0.39↑ but 느림).
+3. 주장 방향을 "diversity-aware" 쪽으로 재정렬하거나, sparse 코어(k=30)로 가서 정확도 우위 재시도.
 
 ### (이전 기록) 참조 baseline 비교 — 현재는 위 표로 대체됨
 | 모델 | NDCG@10 | Recall@10 | MRR@10 | Hit@10 | 학습시간 |
