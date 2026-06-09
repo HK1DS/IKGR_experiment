@@ -141,6 +141,9 @@ class IKGR(GeneralRecommender):
         self.reg_weight = float(_cfg(config, "reg_weight", 1e-6))
         self.use_kg = bool(_cfg(config, "use_kg", True))
         self.kg_pack_path = _cfg(config, "kg_pack_path", "run/kg_pack.pt")
+        self.kg_layers = int(_cfg(config, "kg_layers", 1))
+        self.intent_learnable = bool(_cfg(config, "intent_learnable", True))
+        self.kg_cap = int(_cfg(config, "kg_cap", 64))
 
         n_users, n_items = self.n_users, self.n_items
         self.user_embedding = nn.Embedding(n_users, self.embed_dim)
@@ -153,82 +156,162 @@ class IKGR(GeneralRecommender):
         if self.use_kg:
             self._build_kg(dataset)
 
-    # ---- KG construction (intent nodes + sparse user/item -> intent adjacency)
+    # ---- KG construction (learnable intent nodes + normalized user/item<->intent adjacency)
     def _build_kg(self, dataset):
         pack = torch.load(self.kg_pack_path, map_location="cpu")
-        intent_emb = pack["intent_emb"].float()      # [n_intents, in_dim]
+        raw = pack["intent_emb"].float()             # [n_intents, in_dim] (mpnet)
         self.n_intents = int(pack["n_intents"])
-        in_dim = intent_emb.shape[1]
+        in_dim = raw.shape[1]
+        d = self.embed_dim
 
-        # Frozen semantic init + learnable projection to embed_dim.
-        self.register_buffer("intent_emb_raw", intent_emb)
-        self.intent_proj = nn.Linear(in_dim, self.embed_dim, bias=False)
-        nn.init.xavier_uniform_(self.intent_proj.weight)
-        # Learnable scalar gate on the intent contribution.
+        # Intent NODE embeddings, initialized from a fixed random projection of
+        # the LLM/mpnet intent vectors (preserves semantic geometry, JL lemma),
+        # then learned jointly (genuine shared KG nodes).
+        if in_dim == d:
+            init = raw.clone()
+        else:
+            g = torch.Generator().manual_seed(12345)
+            P = torch.randn(in_dim, d, generator=g) / (d ** 0.5)
+            init = raw @ P                           # [n_intents, d]
+        self.intent_embedding = nn.Embedding(self.n_intents, d)
+        self.intent_embedding.weight.data.copy_(init)
+        if not self.intent_learnable:
+            self.intent_embedding.weight.requires_grad_(False)
         self.intent_alpha = nn.Parameter(torch.tensor(1.0))
 
         u_tok2id = dataset.field2token_id[self.USER_ID]
         i_tok2id = dataset.field2token_id[self.ITEM_ID]
 
-        def build_adj(token_intents, tok2id, n_rows):
-            rows, cols, vals = [], [], []
+        def edges(token_intents, tok2id):
+            rs, cs = [], []
             for tok, ids in token_intents.items():
                 rid = tok2id.get(str(tok))
                 if rid is None:
                     continue
                 ids = ids.tolist() if torch.is_tensor(ids) else list(ids)
-                k = len(ids)
-                if k == 0:
-                    continue
-                w = 1.0 / k  # row-normalized -> mean of connected intent nodes
                 for j in ids:
-                    rows.append(rid); cols.append(j); vals.append(w)
-            idx = torch.tensor([rows, cols], dtype=torch.long)
-            val = torch.tensor(vals, dtype=torch.float32)
-            return idx, val
+                    rs.append(rid); cs.append(int(j))
+            return rs, cs
 
-        au_idx, au_val = build_adj(pack["user_intents"], u_tok2id, self.n_users)
-        ai_idx, ai_val = build_adj(pack["item_intents"], i_tok2id, self.n_items)
-        # Store COO pieces as buffers so .to(device) moves them with the model.
-        self.register_buffer("A_u_idx", au_idx)
-        self.register_buffer("A_u_val", au_val)
-        self.register_buffer("A_i_idx", ai_idx)
-        self.register_buffer("A_i_val", ai_val)
+        ur, uc = edges(pack["user_intents"], u_tok2id)   # user<->intent edges
+        ir, ic = edges(pack["item_intents"], i_tok2id)   # item<->intent edges
+
+        def norm_coo(rows, cols, n_rows):
+            """Row-normalized COO: value = 1/deg(row)."""
+            rt = torch.tensor(rows, dtype=torch.long)
+            ct = torch.tensor(cols, dtype=torch.long)
+            deg = torch.zeros(n_rows)
+            deg.index_add_(0, rt, torch.ones(len(rows)))
+            val = 1.0 / deg[rt].clamp(min=1.0)
+            return torch.stack([rt, ct]), val
+
+        # Mu : user-normalized  user->intent  (user gathers mean of its intents)
+        # MuT: intent-normalized intent->user (intent gathers mean of its users)
+        mats = {
+            "Mu":  norm_coo(ur, uc, self.n_users),
+            "Mi":  norm_coo(ir, ic, self.n_items),
+            "MuT": norm_coo(uc, ur, self.n_intents),
+            "MiT": norm_coo(ic, ir, self.n_intents),
+        }
+        for name, (idx, val) in mats.items():
+            self.register_buffer(f"{name}_idx", idx)
+            self.register_buffer(f"{name}_val", val)
+
+        # Padded intent-id tensors for FAST mini-batch L1 aggregation (gather the
+        # batch's intent-node embeddings directly, avoiding a full-graph sparse
+        # mm every step). Equivalent to Mu/Mi row-mean but only for batch rows.
+        def padded(rows, cols, n_rows, cap):
+            from collections import defaultdict
+            d = defaultdict(list)
+            for r, c in zip(rows, cols):
+                if len(d[r]) < cap:
+                    d[r].append(c)
+            ids = torch.zeros(n_rows, cap, dtype=torch.long)
+            mask = torch.zeros(n_rows, cap, dtype=torch.bool)
+            for r, lst in d.items():
+                k = len(lst)
+                ids[r, :k] = torch.tensor(lst, dtype=torch.long)
+                mask[r, :k] = True
+            return ids, mask
+        ui, um = padded(ur, uc, self.n_users, self.kg_cap)
+        ii, im = padded(ir, ic, self.n_items, self.kg_cap)
+        self.register_buffer("user_intent_ids", ui)
+        self.register_buffer("user_intent_mask", um)
+        self.register_buffer("item_intent_ids", ii)
+        self.register_buffer("item_intent_mask", im)
         self._kg_ready = True
 
+    def _sp(self, name, shape):
+        return torch.sparse_coo_tensor(getattr(self, f"{name}_idx"),
+                                       getattr(self, f"{name}_val"), shape)
+
+    def _agg(self, ids_buf, mask_buf, rows):
+        ids = ids_buf[rows]                                  # [B, cap]
+        m = mask_buf[rows].unsqueeze(-1).float()             # [B, cap, 1]
+        e = self.intent_embedding(ids) * m                   # [B, cap, d]
+        return e.sum(1) / m.sum(1).clamp(min=1.0)            # [B, d]
+
+    def _emb_users(self, uids):
+        e = self.user_embedding(uids)
+        if self.use_kg and self._kg_ready:
+            if self.kg_layers == 1:
+                e = e + self.intent_alpha * self._agg(self.user_intent_ids, self.user_intent_mask, uids)
+            else:
+                e = self._propagate()[0][uids]
+        return e
+
+    def _emb_items(self, iids):
+        e = self.item_embedding(iids)
+        if self.use_kg and self._kg_ready:
+            if self.kg_layers == 1:
+                e = e + self.intent_alpha * self._agg(self.item_intent_ids, self.item_intent_mask, iids)
+            else:
+                e = self._propagate()[1][iids]
+        return e
+
     def _propagate(self):
-        """Return (u_all, i_all): [n_users, d], [n_items, d] enriched embeddings."""
+        """Return (u_all, i_all): KG-enriched user/item embeddings.
+
+        L=1: users/items gather a mean of their connected intent nodes.
+        L=2: intents additionally gather from their users+items, then propagate
+             back -> user->intent->item collaborative signal flows across hops.
+        """
+        E_u = self.user_embedding.weight
+        E_i = self.item_embedding.weight
         if not (self.use_kg and self._kg_ready):
-            return self.user_embedding.weight, self.item_embedding.weight
-        E_int = self.intent_proj(self.intent_emb_raw)  # [n_intents, d]
-        A_u = torch.sparse_coo_tensor(self.A_u_idx, self.A_u_val,
-                                      (self.n_users, self.n_intents))
-        A_i = torch.sparse_coo_tensor(self.A_i_idx, self.A_i_val,
-                                      (self.n_items, self.n_intents))
-        u_agg = torch.sparse.mm(A_u, E_int)            # [n_users, d]
-        i_agg = torch.sparse.mm(A_i, E_int)            # [n_items, d]
-        u_all = self.user_embedding.weight + self.intent_alpha * u_agg
-        i_all = self.item_embedding.weight + self.intent_alpha * i_agg
+            return E_u, E_i
+        ni, nu, nit = self.n_intents, self.n_users, self.n_items
+        Mu = self._sp("Mu", (nu, ni)); Mi = self._sp("Mi", (nit, ni))
+        E_int = self.intent_embedding.weight
+
+        u_acc = torch.sparse.mm(Mu, E_int)           # [n_users, d]
+        i_acc = torch.sparse.mm(Mi, E_int)           # [n_items, d]
+        if self.kg_layers >= 2:
+            MuT = self._sp("MuT", (ni, nu)); MiT = self._sp("MiT", (ni, nit))
+            int1 = torch.sparse.mm(MuT, E_u) + torch.sparse.mm(MiT, E_i)  # intents <- users+items
+            u_acc = u_acc + torch.sparse.mm(Mu, int1)
+            i_acc = i_acc + torch.sparse.mm(Mi, int1)
+
+        u_all = E_u + self.intent_alpha * u_acc
+        i_all = E_i + self.intent_alpha * i_acc
         return u_all, i_all
 
     def forward(self, user, item):
-        u_all, i_all = self._propagate()
-        u = self.dropout_layer(u_all[user])
-        i = self.dropout_layer(i_all[item])
+        u = self.dropout_layer(self._emb_users(user))
+        i = self.dropout_layer(self._emb_items(item))
         return (u * i).sum(dim=-1)
 
     def calculate_loss(self, interaction):
         user = interaction[self.USER_ID]
         pos = interaction[self.ITEM_ID]
-        u_all, i_all = self._propagate()
-        u = u_all[user]
-        pos_e = i_all[pos]
+        u = self._emb_users(user)
+        pos_e = self._emb_items(pos)
         pos_score = (u * pos_e).sum(dim=-1)
 
         has_neg = hasattr(self, "NEG_ITEM_ID") and (self.NEG_ITEM_ID in interaction)
         if has_neg:
             neg = interaction[self.NEG_ITEM_ID]
-            neg_e = i_all[neg]
+            neg_e = self._emb_items(neg)
             neg_score = (u * neg_e).sum(dim=-1)
             loss = -F.logsigmoid(pos_score - neg_score).mean()
             reg = (u.norm(2).pow(2) + pos_e.norm(2).pow(2) + neg_e.norm(2).pow(2))
@@ -246,13 +329,17 @@ class IKGR(GeneralRecommender):
         return loss + self.reg_weight * reg / user.shape[0]
 
     def predict(self, interaction):
-        u_all, i_all = self._propagate()
-        u = u_all[interaction[self.USER_ID]]
-        i = i_all[interaction[self.ITEM_ID]]
+        u = self._emb_users(interaction[self.USER_ID])
+        i = self._emb_items(interaction[self.ITEM_ID])
         return (u * i).sum(dim=-1)
 
     def full_sort_predict(self, interaction):
-        u_all, i_all = self._propagate()
-        u = u_all[interaction[self.USER_ID]]      # [B, d]
-        return torch.matmul(u, i_all.t())          # [B, n_items]
+        users = interaction[self.USER_ID]
+        if self.use_kg and self._kg_ready and self.kg_layers >= 2:
+            u_all, i_all = self._propagate()
+            return torch.matmul(u_all[users], i_all.t())
+        u = self._emb_users(users)                                   # [B, d]
+        all_items = torch.arange(self.n_items, device=users.device)
+        i_all = self._emb_items(all_items)                           # [n_items, d]
+        return torch.matmul(u, i_all.t())
 
