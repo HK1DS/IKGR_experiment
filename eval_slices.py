@@ -203,6 +203,8 @@ def main():
     all_specs = {
         "IKGR_kgoff":   (IKGRModel, {"use_kg": False}),
         "IKGR_kgon_L1": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32}),
+        "IKGR_kgon_L1_frozen": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1,
+                                            "kg_cap": 32, "intent_learnable": False}),
         "IKGR_kgon_L2": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 2, "kg_cap": 32}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),

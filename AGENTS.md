@@ -64,6 +64,22 @@
 2. α/reg/epochs 안정화, kg_layers=2 (smoke에서 cov 0.39↑ but 느림).
 3. 주장 방향을 "diversity-aware" 쪽으로 재정렬하거나, sparse 코어(k=30)로 가서 정확도 우위 재시도.
 
+### ✅✅ IKGR 최종 결론 (frozen-proj multi-seed 완료 → IKGR 단계 종료)
+frozen-proj(`intent_learnable=False`) 3시드 결과 (12ep):
+
+| 변형 (12ep, 3seed) | overall NDCG@10 | tail Recall@10 | cov@10 | 안정성 |
+|---|---|---|---|---|
+| KG-off (MF) | 0.2922±.001 | 0.0597±.001 | 0.640 | 안정 |
+| KG-on L1 frozen | 0.2782±.0002 | 0.0580±.0002 | 0.668±.004 | 매우 안정 |
+| KG-on L1 learnable | 0.2423±.003 | 0.0585±.0104 | 0.738±.087 | 불안정 |
+| BPR | 0.2935±.002 | 0.0600±.001 | 0.643 | 안정 |
+
+**판정 1:** instability 원인 = 학습 가능 intent 노드(27M 파라미터) 확정. frozen은 분산 ~0.
+**판정 2 (IKGR 핵심 결론):** **어느 KG 변형도 long-tail "정확도(Recall)"를 plain MF 대비 robust하게 개선하지 못함** (frozen 0.0580 ≤ MF 0.0597). KG의 **유일하게 일관된 기여 = 추천 다양성/coverage 증가(frozen +4%, learnable +15%)이며 overall 정확도는 희생**.
+**판정 3 (epoch 민감도 단서):** 커밋된 단일시드 20ep frozen은 tail 0.0734 > kgoff(20ep) 0.0704 (+4%)였으나 12ep에선 사라짐 → KG의 미약한 tail 이득은 더 긴 학습에서만, 그것도 ~4%로 작음.
+
+**→ IKGR 단계 종료(DynLLM 진입 전 정지).** 정직한 IKGR 스토리: "intent-KG는 dense 데이터에서 정확도 SOTA가 아니라 **diversity/coverage 트레이드오프**를 제공; long-tail 정확도 이득은 작고 조건부(긴 학습)이며, cold-start 검증엔 sparse 코어(k=30) 필요." DynLLM은 별도 scope.
+
 ### (이전 기록) 참조 baseline 비교 — 현재는 위 표로 대체됨
 | 모델 | NDCG@10 | Recall@10 | MRR@10 | Hit@10 | 학습시간 |
 |---|---|---|---|---|---|
