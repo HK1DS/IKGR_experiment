@@ -213,3 +213,6 @@ data/
 run/*
 !run/*_result.json
 !run/ikgr_baseline_result.json
+
+# TensorBoard run logs (RecBole) - noise, not tracked
+log_tensorboard/
