@@ -144,6 +144,10 @@ class IKGR(GeneralRecommender):
         self.kg_layers = int(_cfg(config, "kg_layers", 1))
         self.intent_learnable = bool(_cfg(config, "intent_learnable", True))
         self.kg_cap = int(_cfg(config, "kg_cap", 64))
+        # Heterogeneous metadata KG (brand/category/attribute), LLM-free.
+        self.use_meta_kg = bool(_cfg(config, "use_meta_kg", False))
+        self.meta_kg_path = _cfg(config, "meta_kg_path", "run/meta_kg_pack.pt")
+        self._meta_ready = False
 
         n_users, n_items = self.n_users, self.n_items
         self.user_embedding = nn.Embedding(n_users, self.embed_dim)
@@ -155,6 +159,8 @@ class IKGR(GeneralRecommender):
         self._kg_ready = False
         if self.use_kg:
             self._build_kg(dataset)
+        if self.use_meta_kg:
+            self._build_meta_kg(dataset)
 
     # ---- KG construction (learnable intent nodes + normalized user/item<->intent adjacency)
     def _build_kg(self, dataset):
@@ -245,28 +251,76 @@ class IKGR(GeneralRecommender):
         return torch.sparse_coo_tensor(getattr(self, f"{name}_idx"),
                                        getattr(self, f"{name}_val"), shape)
 
-    def _agg(self, ids_buf, mask_buf, rows):
+    def _agg(self, emb, ids_buf, mask_buf, rows):
         ids = ids_buf[rows]                                  # [B, cap]
         m = mask_buf[rows].unsqueeze(-1).float()             # [B, cap, 1]
-        e = self.intent_embedding(ids) * m                   # [B, cap, d]
+        e = emb(ids) * m                                     # [B, cap, d]
         return e.sum(1) / m.sum(1).clamp(min=1.0)            # [B, d]
+
+    def _build_meta_kg(self, dataset):
+        """Heterogeneous item-side KG from book metadata (brand/category/attr).
+        Learnable id-node embeddings + padded item->node gather (LLM-free)."""
+        pack = torch.load(self.meta_kg_path, map_location="cpu")
+        i_tok2id = dataset.field2token_id[self.ITEM_ID]
+        d, cap = self.embed_dim, self.kg_cap
+
+        def build(rel_key, n_key, emb_name, ids_name, mask_name, alpha_name):
+            n = max(int(pack[n_key]), 1)
+            emb = nn.Embedding(n, d); nn.init.xavier_uniform_(emb.weight)
+            setattr(self, emb_name, emb)
+            setattr(self, alpha_name, nn.Parameter(torch.tensor(1.0)))
+            ids = torch.zeros(self.n_items, cap, dtype=torch.long)
+            mask = torch.zeros(self.n_items, cap, dtype=torch.bool)
+            present = False
+            for tok, node_ids in pack[rel_key].items():
+                rid = i_tok2id.get(str(tok))
+                if rid is None:
+                    continue
+                lst = (node_ids.tolist() if torch.is_tensor(node_ids) else list(node_ids))[:cap]
+                if not lst:
+                    continue
+                present = True
+                ids[rid, :len(lst)] = torch.tensor(lst, dtype=torch.long)
+                mask[rid, :len(lst)] = True
+            self.register_buffer(ids_name, ids)
+            self.register_buffer(mask_name, mask)
+            return present
+
+        self._has_author = build("item_authors", "n_authors", "author_embedding",
+                                  "item_author_ids", "item_author_mask", "author_alpha")
+        self._has_pub = build("item_publishers", "n_publishers", "publisher_embedding",
+                              "item_pub_ids", "item_pub_mask", "pub_alpha")
+        self._has_shelf = build("item_shelves", "n_shelves", "shelf_embedding",
+                                "item_shelf_ids", "item_shelf_mask", "shelf_alpha")
+        self._meta_ready = True
 
     def _emb_users(self, uids):
         e = self.user_embedding(uids)
         if self.use_kg and self._kg_ready:
             if self.kg_layers == 1:
-                e = e + self.intent_alpha * self._agg(self.user_intent_ids, self.user_intent_mask, uids)
+                e = e + self.intent_alpha * self._agg(self.intent_embedding,
+                                                      self.user_intent_ids, self.user_intent_mask, uids)
             else:
                 e = self._propagate()[0][uids]
         return e
 
     def _emb_items(self, iids):
         e = self.item_embedding(iids)
+        if self.use_kg and self._kg_ready and self.kg_layers >= 2:
+            return self._propagate()[1][iids]   # intent-only L2 path
         if self.use_kg and self._kg_ready:
-            if self.kg_layers == 1:
-                e = e + self.intent_alpha * self._agg(self.item_intent_ids, self.item_intent_mask, iids)
-            else:
-                e = self._propagate()[1][iids]
+            e = e + self.intent_alpha * self._agg(self.intent_embedding,
+                                                  self.item_intent_ids, self.item_intent_mask, iids)
+        if self.use_meta_kg and self._meta_ready:
+            if self._has_author:
+                e = e + self.author_alpha * self._agg(self.author_embedding,
+                                                      self.item_author_ids, self.item_author_mask, iids)
+            if self._has_pub:
+                e = e + self.pub_alpha * self._agg(self.publisher_embedding,
+                                                   self.item_pub_ids, self.item_pub_mask, iids)
+            if self._has_shelf:
+                e = e + self.shelf_alpha * self._agg(self.shelf_embedding,
+                                                     self.item_shelf_ids, self.item_shelf_mask, iids)
         return e
 
     def _propagate(self):

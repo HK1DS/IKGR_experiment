@@ -200,12 +200,17 @@ def _aggregate(per_seed):
 def main():
     cfg = yaml.safe_load(open("config.yaml")); paths, rb = cfg["paths"], cfg["recbole"]
     kg = os.path.abspath("run/kg_pack.pt")
+    meta = os.path.abspath("run/meta_kg_pack.pt")
     all_specs = {
         "IKGR_kgoff":   (IKGRModel, {"use_kg": False}),
         "IKGR_kgon_L1": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32}),
         "IKGR_kgon_L1_frozen": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1,
                                             "kg_cap": 32, "intent_learnable": False}),
         "IKGR_kgon_L2": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 2, "kg_cap": 32}),
+        # heterogeneous metadata KG (brand/category/attribute), LLM-free
+        "IKGR_meta_only": (IKGRModel, {"use_kg": False, "use_meta_kg": True, "meta_kg_path": meta, "kg_cap": 32}),
+        "IKGR_full_hetero": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
+                                         "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }
