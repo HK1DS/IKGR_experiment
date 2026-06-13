@@ -209,3 +209,25 @@ python step3.py
 * PowerShell에서 `$_` 등 변수 이스케이프가 깨지는 경우가 있으니, 파일 조작은 짧은 Python 스크립트로 처리하는 게 안전.
 * `.gitignore`가 `data/`, `run/` 전체를 제외 → 대용량 데이터/산출물은 깃 추적 대상 아님.
 * **인코딩 주의**: Windows 기본 인코딩이 `cp949`라 `run/*.json`(예: step1/step2 캐시)을 점검용으로 직접 열 때 `open(path)`만 쓰면 `UnicodeDecodeError`가 난다. 반드시 `open(path, encoding="utf-8")`로 열 것. (파이프라인 코드 자체는 이미 utf-8로 읽고/쓰므로 정상 동작에는 영향 없음 — 디버깅 스크립트에서만 주의.)
+
+---
+
+### ✅✅✅ IKGR 완성 — 이종 메타데이터 KG로 robust한 long-tail 우위 확보 (반쪽 IKGR 진단 해소)
+이전까지 KG는 User/Item/Intent + has_intent만 = 다이어그램의 절반. **Brand(저자/출판사)/Category·Attribute(shelves)** 노드는 `goodreads_books_children.json.gz`에서 **LLM 없이 무료** 추출 가능 → `build_meta_kg.py` 작성, `model_ikgr.py`에 `use_meta_kg` 관계별 전파 추가.
+
+이종 KG 규모(6,857 아이템): author 3,901(edge 10,714) / publisher 744(6,102) / shelf 772(98,779).
+
+**결과 (12ep, 3seed, mean±std) — `run/slice_eval_result.json`:**
+| 모델 | overall NDCG@10 | tail Recall@10 | tail Recall@30 | cov@10 |
+|---|---|---|---|---|
+| KG-off (MF) | 0.2922 | 0.0597 | 0.1180 | 0.640 |
+| intent-KG frozen | 0.2782 | 0.0580 | 0.1151 | 0.668 |
+| **meta-KG** | 0.2677 | **0.0658±.0015** | **0.1306** | 0.657 |
+| full hetero | 0.2683 | 0.0653 | 0.1292 | 0.650 |
+| BPR | 0.2935 | 0.0600 | 0.1186 | 0.643 |
+| LightGCN | 0.2585 | 0.0276 | 0.0566 | 0.303 |
+
+- **meta-KG tail Recall@10 0.0658 = MF +10%, BPR +10%, intent-only +13%** (robust, 분산 작음). full_hetero ≈ meta_only → driver는 메타데이터(shelf). 트레이드오프 overall -8%.
+- **재현성:** eval_slices는 매 실행 from-scratch(이전 런 의존 X). meta-KG는 LLM 무관 완전 결정적. intent-KG만 LLM 출력(저장본 기준 결정적)에 의존.
+- 재현: `python build_meta_kg.py` → `IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_meta_only,IKGR_full_hetero python eval_slices.py`
+- **IKGR 단계 (이번엔 진짜) 종료.** 다음: cold-start용 sparse 코어(k=30, Qwen 전환) 또는 DynLLM.

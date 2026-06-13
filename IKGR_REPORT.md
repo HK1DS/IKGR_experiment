@@ -10,8 +10,9 @@ DynLLM 진입 직전까지의 모든 작업을 담는다. (작성 시점: IKGR �
 - **목표:** LLM으로 구매/독서 의도(intent)를 추출해 intent-aware Knowledge Graph를 만들고, 이를 추천에 활용했을 때의 효과를 정직하게 측정한다.
 - **핵심 결론:**
   1. 기존 레포의 IKGR 스코어는 **버그 수준**으로 동작하지 않았다 (test NDCG@10 0.045, 인기순 Pop 0.154보다도 낮음). → **재설계로 0.29대까지 복구**(BPR/LightGCN 동급).
-  2. intent-KG의 효과를 다중 시드로 검증한 결과, **long-tail "정확도(Recall)" 향상은 robust하지 않았다** (KG-on ≈ KG-off, 분산 큼).
-  3. KG의 **일관되게 재현되는 유일한 효과는 추천 "다양성(coverage/novelty) 증가"**이며, 그 대가로 overall 정확도를 소폭 희생한다. → "정확도 vs 다양성 트레이드오프".
+  2. **단순 intent-only KG는 long-tail 정확도를 robust하게 개선하지 못했다** (다중 시드: intent-KG ≈ MF, 학습노드는 불안정).
+  3. **그러나 다이어그램대로 KG를 완성(Brand/Category/Attribute 메타데이터 노드 추가)하자 long-tail Recall이 robust하게 향상됐다** (meta-KG tail Recall@10 0.0658 vs MF 0.0597, +10%, 분산 작음). 즉 초기 IKGR은 "반쪽"이었고, 완성 후 실제 우위가 나타남. (§12 참고)
+  4. KG의 효과는 **long-tail/다양성 향상이며 overall 정확도는 ~8% 희생**하는 트레이드오프. dense 환경 + LLM 비반결정성 때문에 정확도 SOTA 주장은 부적절.
   4. **cold-start 주장은 현재 데이터(k=100 dense core)로는 검증 불가** — 가장 비활동 유저도 인터랙션 100+개.
 
 ---
@@ -189,3 +190,41 @@ Windows에서는 `python` 대신 `.venv\Scripts\python.exe` 사용. env 설정�
 - (그 외 사용자 커밋: 실험결과/로그 등)
 
 핵심 파일: `ikgr_core/model_ikgr.py`(모델), `ikgr_core/rag.py`(Annoy 폴백), `step3.py`(학습/평가), `build_kg.py`/`run_baselines.py`/`eval_slices.py`(실험 도구).
+
+---
+
+## 12. IKGR 완성 — 이종 메타데이터 KG (Brand / Category / Attribute)
+
+§4~6의 KG는 **User/Item/Intent + has_intent**만 있는 다이어그램의 절반이었다. 다이어그램의
+**Brand(저자/출판사) / Category·Attribute(popular_shelves) 노드와 belongs_to_brand / in_category /
+has_attribute 관계**는 `goodreads_books_children.json.gz` 메타데이터에서 **LLM 없이 무료**로 추출 가능하다.
+→ `build_meta_kg.py`로 추출, `model_ikgr.py`에 관계별 전파 추가(`use_meta_kg`).
+
+### 12.1 이종 KG 규모 (6,857 아이템, LLM 0회)
+- author(brand) 노드 3,901 / item-edge 10,714
+- publisher(brand) 노드 744 / edge 6,102
+- shelf(category·attribute) 노드 772 / edge 98,779 (독서상태 등 노이즈 shelf 제거 + df≥5)
+
+### 12.2 결과 (12 epochs, seeds 2020/2021/2022, mean±std)
+
+| 모델 | overall NDCG@10 | tail Recall@10 | tail Recall@30 | coverage@10 |
+|---|---|---|---|---|
+| KG-off (MF) | 0.2922±.0009 | 0.0597±.0008 | 0.1180±.0010 | 0.6401 |
+| intent-KG (frozen) | 0.2782±.0002 | 0.0580±.0002 | 0.1151±.0004 | 0.6683 |
+| **meta-KG (brand/cat/attr)** | 0.2677±.0005 | **0.0658±.0015** | **0.1306±.0029** | 0.6566 |
+| **full hetero (intent+meta)** | 0.2683±.0029 | 0.0653±.0006 | 0.1292±.0017 | 0.6500 |
+| BPR | 0.2935±.0021 | 0.0600±.0015 | 0.1186±.0013 | 0.6431 |
+| LightGCN | 0.2585±.0017 | 0.0276±.0005 | 0.0566±.0006 | 0.3028 |
+
+### 12.3 해석
+- **meta-KG가 long-tail에서 robust하게 우위:** tail Recall@10 0.0658 — MF +10.2%, BPR +9.7%, intent-only KG +13.4%. tail@30도 +10.7%. 분산 작아 안정적(±0.0015).
+- **full_hetero ≈ meta_only** → 실질 기여 driver는 **메타데이터(특히 shelf=장르/카테고리)**, intent는 그 위에 추가 이득 거의 없음.
+- 트레이드오프: overall NDCG ~8% 희생(0.268 vs 0.292). LightGCN은 overall과 무관하게 long-tail 최악(popularity bias).
+- **결론 갱신:** "intent-KG는 정확도에 도움 안 됨"(§6.3)은 맞지만, **다이어그램대로 이종 KG를 완성하면 long-tail에서 baseline 대비 robust한 우위**가 성립한다. 초기 IKGR이 반쪽이었던 것이 원인이었음.
+
+### 12.4 재현성 (중요)
+- **각 실험은 from-scratch 독립 학습.** `eval_slices.py`는 매 (모델×시드)마다 RecBole `create_dataset` → fresh init(seed 고정) → `trainer.fit` → 자기 체크포인트로 평가. **이전 "반쪽 IKGR" 런이나 옛 체크포인트에 의존하지 않음** — 탐색 순서가 최종 수치에 섞이지 않는다.
+- **meta-KG 결과는 완전 결정적(LLM 무관):** 표준 k-core → `build_meta_kg.py`(메타데이터 파싱, 랜덤성 없음) → seed 고정 학습. 원본 데이터로 처음부터 돌려도 동일.
+- **유일한 비결정 요소 = step1/step2 LLM 출력**(gpt-4o-mini, temp 0.2). 재호출 시 intent가 달라져 intent-KG 수치만 미세 변동. 단 출력이 `run/step2_related_intents.csv`에 저장돼 있어 그 기준으론 결정적.
+- 재현 명령: `python build_meta_kg.py` 후
+  `IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_meta_only,IKGR_full_hetero python eval_slices.py`
