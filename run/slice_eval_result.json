@@ -1183,5 +1183,242 @@
         ]
       }
     }
+  },
+  "IKGR_meta_only": {
+    "seeds": {
+      "2020": {
+        "overall": {
+          "recall@10": 0.1362,
+          "ndcg@10": 0.2672,
+          "hit@10": 0.8445,
+          "recall@30": 0.2611,
+          "ndcg@30": 0.2754,
+          "hit@30": 0.9637
+        },
+        "n_test_users": 11073,
+        "long_tail": {
+          "head_cut_pop": 386.8000000000002,
+          "n_tail_items": 5486,
+          "n_users_with_tail_rel": 10537,
+          "recall@10": 0.0641,
+          "ndcg@10": 0.0662,
+          "hit@10": 0.2616,
+          "recall@30": 0.1268,
+          "ndcg@30": 0.0879,
+          "hit@30": 0.4118
+        },
+        "cold_start_buckets": {
+          "Q1_cold": {
+            "n_users": 2319,
+            "ndcg@10": 0.2103,
+            "recall@10": 0.1748
+          },
+          "Q2": {
+            "n_users": 2178,
+            "ndcg@10": 0.2255,
+            "recall@10": 0.1597
+          },
+          "Q3": {
+            "n_users": 2166,
+            "ndcg@10": 0.2499,
+            "recall@10": 0.1435
+          },
+          "Q4": {
+            "n_users": 2207,
+            "ndcg@10": 0.2873,
+            "recall@10": 0.1235
+          },
+          "Q5_warm": {
+            "n_users": 2203,
+            "ndcg@10": 0.3653,
+            "recall@10": 0.078
+          }
+        },
+        "activity_q_20_40_60_80": [
+          105.0,
+          126.0,
+          162.0,
+          245.0
+        ],
+        "coverage@10": 0.6528,
+        "novelty_bits": 10.917,
+        "avg_rec_popularity": 2041.4,
+        "train_sec": 736.9
+      },
+      "2021": {
+        "overall": {
+          "recall@10": 0.1366,
+          "ndcg@10": 0.2676,
+          "hit@10": 0.848,
+          "recall@30": 0.2616,
+          "ndcg@30": 0.2755,
+          "hit@30": 0.9644
+        },
+        "n_test_users": 11073,
+        "long_tail": {
+          "head_cut_pop": 385.8000000000002,
+          "n_tail_items": 5486,
+          "n_users_with_tail_rel": 10534,
+          "recall@10": 0.0677,
+          "ndcg@10": 0.0696,
+          "hit@10": 0.2682,
+          "recall@30": 0.1338,
+          "ndcg@30": 0.0922,
+          "hit@30": 0.4226
+        },
+        "cold_start_buckets": {
+          "Q1_cold": {
+            "n_users": 2319,
+            "ndcg@10": 0.2114,
+            "recall@10": 0.1758
+          },
+          "Q2": {
+            "n_users": 2178,
+            "ndcg@10": 0.2267,
+            "recall@10": 0.1617
+          },
+          "Q3": {
+            "n_users": 2166,
+            "ndcg@10": 0.2495,
+            "recall@10": 0.1441
+          },
+          "Q4": {
+            "n_users": 2207,
+            "ndcg@10": 0.2873,
+            "recall@10": 0.122
+          },
+          "Q5_warm": {
+            "n_users": 2203,
+            "ndcg@10": 0.3651,
+            "recall@10": 0.0778
+          }
+        },
+        "activity_q_20_40_60_80": [
+          105.0,
+          126.0,
+          162.0,
+          245.0
+        ],
+        "coverage@10": 0.659,
+        "novelty_bits": 10.9621,
+        "avg_rec_popularity": 1989.6,
+        "train_sec": 733.1
+      },
+      "2022": {
+        "overall": {
+          "recall@10": 0.1375,
+          "ndcg@10": 0.2684,
+          "hit@10": 0.844,
+          "recall@30": 0.2643,
+          "ndcg@30": 0.2777,
+          "hit@30": 0.9604
+        },
+        "n_test_users": 11073,
+        "long_tail": {
+          "head_cut_pop": 387.0,
+          "n_tail_items": 5488,
+          "n_users_with_tail_rel": 10554,
+          "recall@10": 0.0655,
+          "ndcg@10": 0.0662,
+          "hit@10": 0.2595,
+          "recall@30": 0.1313,
+          "ndcg@30": 0.0895,
+          "hit@30": 0.4157
+        },
+        "cold_start_buckets": {
+          "Q1_cold": {
+            "n_users": 2319,
+            "ndcg@10": 0.2148,
+            "recall@10": 0.1785
+          },
+          "Q2": {
+            "n_users": 2178,
+            "ndcg@10": 0.2271,
+            "recall@10": 0.1615
+          },
+          "Q3": {
+            "n_users": 2166,
+            "ndcg@10": 0.2523,
+            "recall@10": 0.1449
+          },
+          "Q4": {
+            "n_users": 2207,
+            "ndcg@10": 0.2847,
+            "recall@10": 0.1227
+          },
+          "Q5_warm": {
+            "n_users": 2203,
+            "ndcg@10": 0.3652,
+            "recall@10": 0.0783
+          }
+        },
+        "activity_q_20_40_60_80": [
+          105.0,
+          126.0,
+          162.0,
+          245.0
+        ],
+        "coverage@10": 0.658,
+        "novelty_bits": 10.8889,
+        "avg_rec_popularity": 2082.7,
+        "train_sec": 736.3
+      }
+    },
+    "agg": {
+      "overall.ndcg@10": {
+        "mean": 0.2677,
+        "std": 0.0005,
+        "seeds": [
+          0.2672,
+          0.2676,
+          0.2684
+        ]
+      },
+      "overall.recall@10": {
+        "mean": 0.1368,
+        "std": 0.0005,
+        "seeds": [
+          0.1362,
+          0.1366,
+          0.1375
+        ]
+      },
+      "long_tail.recall@10": {
+        "mean": 0.0658,
+        "std": 0.0015,
+        "seeds": [
+          0.0641,
+          0.0677,
+          0.0655
+        ]
+      },
+      "long_tail.recall@30": {
+        "mean": 0.1306,
+        "std": 0.0029,
+        "seeds": [
+          0.1268,
+          0.1338,
+          0.1313
+        ]
+      },
+      "coverage@10": {
+        "mean": 0.6566,
+        "std": 0.0027,
+        "seeds": [
+          0.6528,
+          0.659,
+          0.658
+        ]
+      },
+      "novelty_bits": {
+        "mean": 10.9227,
+        "std": 0.0302,
+        "seeds": [
+          10.917,
+          10.9621,
+          10.8889
+        ]
+      }
+    }
   }
 }
