@@ -32,6 +32,8 @@ COV_K = 10
 
 
 def _config(rb, paths, extra, seed):
+    split = os.environ.get("IKGR_SPLIT", "RS").upper()
+    load_inter = ["user_id", "item_id", "rating"] + (["timestamp"] if split == "TO" else [])
     cd = {
         "epochs": int(os.environ.get("IKGR_EPOCHS", rb["epochs"])),
         "metrics": rb["metrics"], "topk": rb["topk"],
@@ -39,12 +41,17 @@ def _config(rb, paths, extra, seed):
         "dropout_prob": rb.get("dropout", 0.1),
         "data_path": os.path.dirname(paths["inter_file"]),
         "USER_ID_FIELD": "user_id", "ITEM_ID_FIELD": "item_id", "LABEL_FIELD": "rating",
-        "load_col": {"inter": ["user_id", "item_id", "rating"]},
+        "load_col": {"inter": load_inter},
         "train_neg_sample_args": {"distribution": "uniform"},
         "save_dataset": False, "save_dataloaders": False, "show_progress": False,
         "checkpoint_dir": os.path.abspath("run/recbole_slice"), "eval_step": 5,
         "seed": seed, "reproducibility": True,
     }
+    if split == "TO":
+        # temporal (per-user time-ordered) split: train=earliest, test=latest
+        cd["TIME_FIELD"] = "timestamp"
+        cd["eval_args"] = {"split": {"RS": [0.8, 0.1, 0.1]}, "order": "TO",
+                           "group_by": "user", "mode": "full"}
     cd.update(extra)
     return cd
 
@@ -217,7 +224,8 @@ def main():
     seeds = [int(s) for s in os.environ.get("IKGR_SEEDS", "2020,2021,2022").split(",")]
     spec_names = os.environ.get("IKGR_SPECS", ",".join(all_specs)).split(",")
 
-    out_path = "run/slice_eval_result.json"
+    split = os.environ.get("IKGR_SPLIT", "RS").upper()
+    out_path = "run/slice_eval_result.json" if split == "RS" else f"run/slice_eval_{split}_result.json"
     results = json.load(open(out_path, encoding="utf-8")) if os.path.exists(out_path) else {}
 
     for name in spec_names:

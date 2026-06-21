@@ -231,3 +231,23 @@ python step3.py
 - **재현성:** eval_slices는 매 실행 from-scratch(이전 런 의존 X). meta-KG는 LLM 무관 완전 결정적. intent-KG만 LLM 출력(저장본 기준 결정적)에 의존.
 - 재현: `python build_meta_kg.py` → `IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_meta_only,IKGR_full_hetero python eval_slices.py`
 - **IKGR 단계 (이번엔 진짜) 종료.** 다음: cold-start용 sparse 코어(k=30, Qwen 전환) 또는 DynLLM.
+
+---
+
+### ▶ DynLLM 단계 시작 (Option B) — Step 1: 시간순(TO) split + 재baseline 완료
+- 설계: `DYNLLM_INTEGRATION.md` (공식 `dynmLLM/` 이식 대신 우리 RecBole/IKGR 위에 메커니즘 재구현).
+- timestamp 복원: `goodreads_preprocess.py`(timestamp 인지화) + `add_timestamps.py`(기존 k-core backfill, 2,489,355행 전부 매칭, 99.96% 유효) → `data/k_core/interactions_k100_ts.csv`.
+- `make_temporal_inter.py`: garbage 날짜 [2006,2017]로 clip → `data/k_core/ikgr-custom/ikgr-custom.inter`에 `timestamp:float` 추가(1.6% clip). RS 런 하위호환.
+- `eval_slices.py`: `IKGR_SPLIT=TO` 지원(`order=TO`, per-user 시간순 split, 결과 `run/slice_eval_TO_result.json`).
+
+**TO baseline (12ep, 3seed, mean±std):**
+| 모델 | overall NDCG@10 | tail Recall@10 | tail Recall@30 | cov@10 |
+|---|---|---|---|---|
+| MF (kgoff) | 0.0777±.0005 | 0.0089±.0003 | 0.0220 | 0.627 |
+| **IKGR (full hetero)** | 0.0696±.0017 | **0.0108±.0007** | **0.0269±.0012** | 0.690 |
+| BPR | 0.0778±.0004 | 0.0092±.0004 | 0.0227 | 0.633 |
+| LightGCN | 0.0836±.0002 | 0.0052±.0002 | 0.0127 | 0.332 |
+
+- 시간순 예측이라 overall NDCG는 RS(0.29대)보다 크게 낮음(정상). **IKGR long-tail 우위는 TO에서 더 큼**: tail@10 +21% vs MF, +17% vs BPR, +108% vs LightGCN. LightGCN은 overall 1위·tail 최악(popularity bias 심화).
+- per-user 시간순 split이라 모든 유저가 train에 등장(진짜 cold-start 유저는 아직 없음 — 글로벌 시간 split은 별도 과제).
+- **다음 (Step 2): recency 가중 동적 프로필** — 유저 표현을 최근 상호작용 아이템 facet의 시간감쇠 가중 집계로. `use_dynamic` 토글, IKGR vs IKGR+recency 비교.
