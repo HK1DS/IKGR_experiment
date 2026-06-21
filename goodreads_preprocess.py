@@ -66,7 +66,19 @@ def load_books(books_gz: str, max_text_len: int) -> Dict[str, str]:
     return item_profile
 
 
-def iter_interactions(inter_gz: str) -> Iterable[Tuple[str, str, float]]:
+def _parse_ts(s: str) -> float:
+    """Goodreads date string ('Fri Feb 24 09:00:30 -0800 2017') -> epoch seconds.
+    Returns 0.0 if missing/unparseable."""
+    if not s:
+        return 0.0
+    try:
+        from datetime import datetime
+        return datetime.strptime(str(s).strip(), "%a %b %d %H:%M:%S %z %Y").timestamp()
+    except Exception:
+        return 0.0
+
+
+def iter_interactions(inter_gz: str) -> Iterable[Tuple[str, str, float, float]]:
     with gzip.open(inter_gz, "rt", encoding="utf-8", errors="ignore") as f:
         for line in f:
             if not line.strip():
@@ -81,18 +93,20 @@ def iter_interactions(inter_gz: str) -> Iterable[Tuple[str, str, float]]:
                 rating = float(rating)
             except Exception:
                 rating = 0.0
-            yield str(uid), str(iid), rating
+            # prefer read_at, then date_added (when the interaction was recorded)
+            ts = _parse_ts(row.get("read_at") or row.get("date_added") or "")
+            yield str(uid), str(iid), rating, ts
 
 
 def write_interactions(inter_gz: str, out_interactions: str, min_rating: float = None) -> None:
     os.makedirs(os.path.dirname(out_interactions), exist_ok=True)
     with open(out_interactions, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["user_id", "item_id", "rating"])
-        for uid, iid, rating in iter_interactions(inter_gz):
+        writer.writerow(["user_id", "item_id", "rating", "timestamp"])
+        for uid, iid, rating, ts in iter_interactions(inter_gz):
             if min_rating is not None and rating < min_rating:
                 continue
-            writer.writerow([uid, iid, rating])
+            writer.writerow([uid, iid, rating, ts])
 
 
 def build_user_profiles(inter_gz: str,
@@ -102,7 +116,7 @@ def build_user_profiles(inter_gz: str,
                         min_rating: float = None) -> Dict[str, str]:
     user_items: Dict[str, list] = defaultdict(list)
 
-    for uid, iid, rating in iter_interactions(inter_gz):
+    for uid, iid, rating, ts in iter_interactions(inter_gz):
         if min_rating is not None and rating < min_rating:
             continue
         if len(user_items[uid]) >= max_profile_items:
@@ -130,7 +144,7 @@ def write_profiles(inter_gz: str,
     with open(out_profiles, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["user_id", "user_profile", "item_id", "item_profile"])
-        for uid, iid, rating in iter_interactions(inter_gz):
+        for uid, iid, rating, ts in iter_interactions(inter_gz):
             if min_rating is not None and rating < min_rating:
                 continue
             writer.writerow([

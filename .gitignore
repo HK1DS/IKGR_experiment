@@ -216,3 +216,6 @@ run/*
 
 # TensorBoard run logs (RecBole) - noise, not tracked
 log_tensorboard/
+
+# macOS junk
+.DS_Store
