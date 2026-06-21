@@ -251,3 +251,20 @@ python step3.py
 - 시간순 예측이라 overall NDCG는 RS(0.29대)보다 크게 낮음(정상). **IKGR long-tail 우위는 TO에서 더 큼**: tail@10 +21% vs MF, +17% vs BPR, +108% vs LightGCN. LightGCN은 overall 1위·tail 최악(popularity bias 심화).
 - per-user 시간순 split이라 모든 유저가 train에 등장(진짜 cold-start 유저는 아직 없음 — 글로벌 시간 split은 별도 과제).
 - **다음 (Step 2): recency 가중 동적 프로필** — 유저 표현을 최근 상호작용 아이템 facet의 시간감쇠 가중 집계로. `use_dynamic` 토글, IKGR vs IKGR+recency 비교.
+
+
+### ▶ DynLLM Step 2: recency 동적 프로필 — ablation 완료
+모델: `_emb_users`에 recency 가중 동적 항 추가 (유저 train 상호작용 중 최근 N=50 아이템 임베딩의 exp-decay(τ=180d) 가중 평균). `use_dynamic` 토글, train split만 사용(누수 없음, 2,001,199 inters=80% 확인). `eval_slices.py`에 `_build_recency` + `IKGR_dyn` spec.
+
+**TO ablation (12ep, 3seed, mean±std) — `run/slice_eval_TO_result.json`:**
+| 모델 | overall NDCG@10 | tail Recall@10 | tail@30 | cov@10 |
+|---|---|---|---|---|
+| MF (kgoff) | 0.0777±.0005 | 0.0089±.0003 | 0.0220 | 0.627 |
+| IKGR (full hetero) | 0.0696±.0017 | 0.0108±.0007 | 0.0269 | 0.690 |
+| **IKGR+DynLLM(recency)** | 0.0718±.0011 | 0.0110±.0003 | 0.0268 | 0.670 |
+| BPR | 0.0778±.0004 | 0.0092±.0004 | 0.0227 | 0.633 |
+| LightGCN | 0.0836±.0002 | 0.0052±.0002 | 0.0127 | 0.332 |
+
+- `IKGR → +recency`: overall +3.2%(0.0696→0.0718, KG로 잃은 정확도 일부 회복), tail@10 유지(분산↓), coverage 여전히 높음. → 컴포넌트가 ablation에서 값을 더함(정확도 회복 + long-tail 유지).
+- 한계: 이득 modest, overall은 아직 MF/BPR 미만. 단 long-tail/coverage 우위는 유지.
+- **다음(Step 3): multi-facet attention fusion** (스칼라 게이트 → MHA). 이후 crowds(Step 4, 선택).

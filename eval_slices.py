@@ -56,6 +56,36 @@ def _config(rb, paths, extra, seed):
     return cd
 
 
+def _build_recency(model, train_data, config):
+    """Per-user recency profile from TRAIN interactions only (no leakage):
+    top-N most recent items + exp-decay weights -> model.set_recency()."""
+    from collections import defaultdict
+    inter = train_data.dataset.inter_feat
+    uf, itf = config["USER_ID_FIELD"], config["ITEM_ID_FIELD"]
+    if "timestamp" not in inter.columns:
+        raise RuntimeError("use_dynamic requires timestamp (run with IKGR_SPLIT=TO).")
+    u = inter[uf].numpy(); it = inter[itf].numpy(); ts = inter["timestamp"].numpy()
+    N = model.recency_topn
+    tau = max(model.recency_tau_days * 86400.0, 1.0)
+    byu = defaultdict(list)
+    for a, b, c in zip(u, it, ts):
+        byu[int(a)].append((float(c), int(b)))
+    ids = np.zeros((model.n_users, N), dtype=np.int64)
+    wts = np.zeros((model.n_users, N), dtype=np.float32)
+    for uid, lst in byu.items():
+        lst.sort(reverse=True)            # most recent first
+        lst = lst[:N]
+        tref = lst[0][0]
+        w = np.exp(-np.array([tref - c for c, _ in lst], dtype=np.float64) / tau)
+        s = w.sum()
+        w = (w / s) if s > 0 else w
+        for j, (c, b) in enumerate(lst):
+            ids[uid, j] = b; wts[uid, j] = w[j]
+    dev = next(model.parameters()).device
+    model.set_recency(torch.from_numpy(ids).to(dev), torch.from_numpy(wts).to(dev))
+    print(f"  [recency] built for {len(byu)} users from {len(u)} train inters (N={N})", flush=True)
+
+
 def _train_and_collect(model_arg, extra, rb, paths, seed):
     os.makedirs("run/recbole_slice", exist_ok=True)
     config = Config(model=model_arg, dataset=rb["dataset"], config_dict=_config(rb, paths, extra, seed))
@@ -63,6 +93,8 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
     train_data, valid_data, test_data = data_preparation(config, dataset)
     klass = model_arg if not isinstance(model_arg, str) else get_model(config["model"])
     model = klass(config, train_data.dataset).to(config["device"])
+    if getattr(model, "use_dynamic", False):
+        _build_recency(model, train_data, config)
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
     t0 = time.time()
     trainer.fit(train_data, valid_data, saved=True, show_progress=False)
@@ -218,6 +250,9 @@ def main():
         "IKGR_meta_only": (IKGRModel, {"use_kg": False, "use_meta_kg": True, "meta_kg_path": meta, "kg_cap": 32}),
         "IKGR_full_hetero": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
                                          "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta}),
+        "IKGR_dyn": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
+                                 "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
+                                 "use_dynamic": True}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }

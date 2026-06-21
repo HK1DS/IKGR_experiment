@@ -148,6 +148,14 @@ class IKGR(GeneralRecommender):
         self.use_meta_kg = bool(_cfg(config, "use_meta_kg", False))
         self.meta_kg_path = _cfg(config, "meta_kg_path", "run/meta_kg_pack.pt")
         self._meta_ready = False
+        # DynLLM-style dynamic profile: recency-weighted aggregation of the
+        # user's recent (train-only) item embeddings. Injected via set_recency().
+        self.use_dynamic = bool(_cfg(config, "use_dynamic", False))
+        self.recency_topn = int(_cfg(config, "recency_topn", 50))
+        self.recency_tau_days = float(_cfg(config, "recency_tau_days", 180.0))
+        self._recency_ready = False
+        if self.use_dynamic:
+            self.dynamic_alpha = nn.Parameter(torch.tensor(1.0))
 
         n_users, n_items = self.n_users, self.n_items
         self.user_embedding = nn.Embedding(n_users, self.embed_dim)
@@ -294,6 +302,13 @@ class IKGR(GeneralRecommender):
                                 "item_shelf_ids", "item_shelf_mask", "shelf_alpha")
         self._meta_ready = True
 
+    def set_recency(self, item_ids, weights):
+        """Inject per-user recency profile (train-only). item_ids/weights:
+        [n_users, recency_topn] (weights are recency-normalized, 0 for padding)."""
+        self.register_buffer("recency_item_ids", item_ids.long())
+        self.register_buffer("recency_weights", weights.float())
+        self._recency_ready = True
+
     def _emb_users(self, uids):
         e = self.user_embedding(uids)
         if self.use_kg and self._kg_ready:
@@ -302,6 +317,11 @@ class IKGR(GeneralRecommender):
                                                       self.user_intent_ids, self.user_intent_mask, uids)
             else:
                 e = self._propagate()[0][uids]
+        if self.use_dynamic and self._recency_ready:
+            rid = self.recency_item_ids[uids]                 # [B, N]
+            w = self.recency_weights[uids].unsqueeze(-1)       # [B, N, 1]
+            dyn = (self.item_embedding(rid) * w).sum(1)        # [B, d] recency-weighted recent items
+            e = e + self.dynamic_alpha * dyn
         return e
 
     def _emb_items(self, iids):
