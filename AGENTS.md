@@ -268,3 +268,18 @@ python step3.py
 - `IKGR → +recency`: overall +3.2%(0.0696→0.0718, KG로 잃은 정확도 일부 회복), tail@10 유지(분산↓), coverage 여전히 높음. → 컴포넌트가 ablation에서 값을 더함(정확도 회복 + long-tail 유지).
 - 한계: 이득 modest, overall은 아직 MF/BPR 미만. 단 long-tail/coverage 우위는 유지.
 - **다음(Step 3): multi-facet attention fusion** (스칼라 게이트 → MHA). 이후 crowds(Step 4, 선택).
+
+
+### ▶ DynLLM Step 3: multi-facet attention fusion — 시도 후 기각(negative)
+모델: `profile_attn` 토글 — facet 스칼라 게이트 합산 대신 MHA(query=base, key/value=facet 벡터). 점검(체크포인트 α): shelf 2.16 > author 1.97 > recency 1.51 > intent 1.13 > pub 1.10, 모든 게이트 양수(죽은 컴포넌트 없음, recency 활성 확인).
+
+**TO ablation (12ep, 3seed):**
+| 모델 | overall NDCG@10 | tail Recall@10 | cov@10 |
+|---|---|---|---|
+| IKGR full_hetero | 0.0696±.0017 | 0.0108±.0007 | 0.690 |
+| IKGR+recency (Step2) | 0.0718±.0011 | 0.0110±.0003 | 0.670 |
+| IKGR+recency+attn (Step3) | 0.0727±.0016 | 0.0097±.0002 | 0.642 |
+
+- attention fusion: overall +1.3%이나 **tail −12%, coverage −4%** → facet collapse로 long-tail/다양성(우리 핵심 강점) 손상. ~1.3배 느림. **기각.**
+- **결론: DynLLM 실질 기여 = recency(Step 2). attention(Step 3)은 negative.** Step 4(crowds)는 효과 기대 낮아 보류 권장.
+- **DynLLM 단계 잠정 종료:** 정직한 스토리 = "recency 동적 프로필이 정확도 일부 회복 + long-tail 유지; 학습 attention fusion은 다양성을 희생해 부적합".

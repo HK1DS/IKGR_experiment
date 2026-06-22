@@ -156,6 +156,13 @@ class IKGR(GeneralRecommender):
         self._recency_ready = False
         if self.use_dynamic:
             self.dynamic_alpha = nn.Parameter(torch.tensor(1.0))
+        # Step 3: multi-facet attention fusion (DynLLM multi_profile_target).
+        # Replaces the fixed scalar-gate sum with query=base, key/value=facets MHA.
+        self.profile_attn = bool(_cfg(config, "profile_attn", False))
+        if self.profile_attn:
+            nh = int(_cfg(config, "profile_attn_heads", 4))
+            self.user_attn = nn.MultiheadAttention(self.embed_dim, nh, dropout=self.dropout, batch_first=True)
+            self.item_attn = nn.MultiheadAttention(self.embed_dim, nh, dropout=self.dropout, batch_first=True)
 
         n_users, n_items = self.n_users, self.n_items
         self.user_embedding = nn.Embedding(n_users, self.embed_dim)
@@ -309,39 +316,54 @@ class IKGR(GeneralRecommender):
         self.register_buffer("recency_weights", weights.float())
         self._recency_ready = True
 
-    def _emb_users(self, uids):
-        e = self.user_embedding(uids)
-        if self.use_kg and self._kg_ready:
-            if self.kg_layers == 1:
-                e = e + self.intent_alpha * self._agg(self.intent_embedding,
-                                                      self.user_intent_ids, self.user_intent_mask, uids)
-            else:
-                e = self._propagate()[0][uids]
-        if self.use_dynamic and self._recency_ready:
-            rid = self.recency_item_ids[uids]                 # [B, N]
-            w = self.recency_weights[uids].unsqueeze(-1)       # [B, N, 1]
-            dyn = (self.item_embedding(rid) * w).sum(1)        # [B, d] recency-weighted recent items
-            e = e + self.dynamic_alpha * dyn
+    def _fuse(self, base, gated, raw, attn):
+        """Combine base with facets. Default: base + sum(gated). If profile_attn:
+        base + MHA(query=base, key/value=stacked raw facets)."""
+        if not raw:
+            return base
+        if self.profile_attn:
+            F_ = torch.stack(raw, dim=1)                      # [B, n_facets, d]
+            out, _ = attn(base.unsqueeze(1), F_, F_)          # [B, 1, d]
+            return base + out.squeeze(1)
+        e = base
+        for g in gated:
+            e = e + g
         return e
 
-    def _emb_items(self, iids):
-        e = self.item_embedding(iids)
+    def _emb_users(self, uids):
+        base = self.user_embedding(uids)
         if self.use_kg and self._kg_ready and self.kg_layers >= 2:
-            return self._propagate()[1][iids]   # intent-only L2 path
+            base = self._propagate()[0][uids]
+        gated, raw = [], []
+        if self.use_kg and self._kg_ready and self.kg_layers == 1:
+            v = self._agg(self.intent_embedding, self.user_intent_ids, self.user_intent_mask, uids)
+            gated.append(self.intent_alpha * v); raw.append(v)
+        if self.use_dynamic and self._recency_ready:
+            rid = self.recency_item_ids[uids]
+            w = self.recency_weights[uids].unsqueeze(-1)
+            dyn = (self.item_embedding(rid) * w).sum(1)
+            gated.append(self.dynamic_alpha * dyn); raw.append(dyn)
+        return self._fuse(base, gated, raw, getattr(self, "user_attn", None))
+
+    def _emb_items(self, iids):
+        base = self.item_embedding(iids)
+        if self.use_kg and self._kg_ready and self.kg_layers >= 2:
+            return self._propagate()[1][iids]
+        gated, raw = [], []
         if self.use_kg and self._kg_ready:
-            e = e + self.intent_alpha * self._agg(self.intent_embedding,
-                                                  self.item_intent_ids, self.item_intent_mask, iids)
+            v = self._agg(self.intent_embedding, self.item_intent_ids, self.item_intent_mask, iids)
+            gated.append(self.intent_alpha * v); raw.append(v)
         if self.use_meta_kg and self._meta_ready:
             if self._has_author:
-                e = e + self.author_alpha * self._agg(self.author_embedding,
-                                                      self.item_author_ids, self.item_author_mask, iids)
+                v = self._agg(self.author_embedding, self.item_author_ids, self.item_author_mask, iids)
+                gated.append(self.author_alpha * v); raw.append(v)
             if self._has_pub:
-                e = e + self.pub_alpha * self._agg(self.publisher_embedding,
-                                                   self.item_pub_ids, self.item_pub_mask, iids)
+                v = self._agg(self.publisher_embedding, self.item_pub_ids, self.item_pub_mask, iids)
+                gated.append(self.pub_alpha * v); raw.append(v)
             if self._has_shelf:
-                e = e + self.shelf_alpha * self._agg(self.shelf_embedding,
-                                                     self.item_shelf_ids, self.item_shelf_mask, iids)
-        return e
+                v = self._agg(self.shelf_embedding, self.item_shelf_ids, self.item_shelf_mask, iids)
+                gated.append(self.shelf_alpha * v); raw.append(v)
+        return self._fuse(base, gated, raw, getattr(self, "item_attn", None))
 
     def _propagate(self):
         """Return (u_all, i_all): KG-enriched user/item embeddings.
