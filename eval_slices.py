@@ -256,6 +256,11 @@ def main():
         "IKGR_dyn_attn": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
                                       "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
                                       "use_dynamic": True, "profile_attn": True}),
+        # CORONA stage 3 = Full(IKGR+DynLLM+CORONA): per-channel weighted-sum
+        # late-fusion (CF / intent+meta-KG / recency) with learnable alpha,beta,gamma.
+        "IKGR_full": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
+                                  "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
+                                  "use_dynamic": True, "use_corona": True}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }

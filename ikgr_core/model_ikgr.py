@@ -163,6 +163,21 @@ class IKGR(GeneralRecommender):
             nh = int(_cfg(config, "profile_attn_heads", 4))
             self.user_attn = nn.MultiheadAttention(self.embed_dim, nh, dropout=self.dropout, batch_first=True)
             self.item_attn = nn.MultiheadAttention(self.embed_dim, nh, dropout=self.dropout, batch_first=True)
+        # CORONA (stage 3) weighted-sum late-fusion = the Full(IKGR+DynLLM+CORONA)
+        # model. Instead of one inner product over summed facet embeddings (the
+        # default _fuse path, which implicitly mixes every cross term at weight 1),
+        # score each CHANNEL separately and combine with learnable weights:
+        #   Final = gamma * <e_u, e_i>            (CF / item-similarity channel)
+        #         + alpha * <kg_u, kg_i>          (intent + meta-KG channel)
+        #         + beta  * <dyn_u, e_i>          (DynLLM recency channel)
+        # This is the diagram's 3-3 weighted-sum ranking. The honest question
+        # (CORONA_INTEGRATION.md sec.6) is whether explicit separation + learned
+        # weights beats the implicit summed-embedding score.
+        self.use_corona = bool(_cfg(config, "use_corona", False))
+        if self.use_corona:
+            self.corona_alpha = nn.Parameter(torch.tensor(1.0))   # intent/KG channel
+            self.corona_beta = nn.Parameter(torch.tensor(1.0))    # dynamic channel
+            self.corona_gamma = nn.Parameter(torch.tensor(1.0))   # CF/base channel
 
         n_users, n_items = self.n_users, self.n_items
         self.user_embedding = nn.Embedding(n_users, self.embed_dim)
@@ -365,7 +380,62 @@ class IKGR(GeneralRecommender):
                 gated.append(self.shelf_alpha * v); raw.append(v)
         return self._fuse(base, gated, raw, getattr(self, "item_attn", None))
 
-    def _propagate(self):
+    # ---- CORONA (stage 3) per-channel reps + weighted-sum late-fusion ----
+    def _corona_user_channels(self, uids):
+        """Return (cf, kg, dyn) user channel reps (kg/dyn may be None)."""
+        cf = self.dropout_layer(self.user_embedding(uids))
+        kg = None
+        if self.use_kg and self._kg_ready:
+            kg = self._agg(self.intent_embedding, self.user_intent_ids, self.user_intent_mask, uids)
+        dyn = None
+        if self.use_dynamic and self._recency_ready:
+            rid = self.recency_item_ids[uids]
+            w = self.recency_weights[uids].unsqueeze(-1)
+            dyn = (self.item_embedding(rid) * w).sum(1)
+        return cf, kg, dyn
+
+    def _corona_item_channels(self, iids):
+        """Return (cf, kg) item channel reps. The dynamic channel scores against
+        the item CF rep, so no separate item dyn rep is needed."""
+        cf = self.dropout_layer(self.item_embedding(iids))
+        parts = []
+        if self.use_kg and self._kg_ready:
+            parts.append(self._agg(self.intent_embedding, self.item_intent_ids, self.item_intent_mask, iids))
+        if self.use_meta_kg and self._meta_ready:
+            if self._has_author:
+                parts.append(self._agg(self.author_embedding, self.item_author_ids, self.item_author_mask, iids))
+            if self._has_pub:
+                parts.append(self._agg(self.publisher_embedding, self.item_pub_ids, self.item_pub_mask, iids))
+            if self._has_shelf:
+                parts.append(self._agg(self.shelf_embedding, self.item_shelf_ids, self.item_shelf_mask, iids))
+        kg = None
+        if parts:
+            kg = parts[0]
+            for p in parts[1:]:
+                kg = kg + p
+        return cf, kg
+
+    def _corona_pair(self, uids, iids):
+        ucf, ukg, udyn = self._corona_user_channels(uids)
+        icf, ikg = self._corona_item_channels(iids)
+        s = self.corona_gamma * (ucf * icf).sum(dim=-1)
+        if ukg is not None and ikg is not None:
+            s = s + self.corona_alpha * (ukg * ikg).sum(dim=-1)
+        if udyn is not None:
+            s = s + self.corona_beta * (udyn * icf).sum(dim=-1)
+        return s
+
+    def _corona_full(self, uids):
+        ucf, ukg, udyn = self._corona_user_channels(uids)
+        all_items = torch.arange(self.n_items, device=uids.device)
+        icf, ikg = self._corona_item_channels(all_items)
+        s = self.corona_gamma * torch.matmul(ucf, icf.t())
+        if ukg is not None and ikg is not None:
+            s = s + self.corona_alpha * torch.matmul(ukg, ikg.t())
+        if udyn is not None:
+            s = s + self.corona_beta * torch.matmul(udyn, icf.t())
+        return s
+
         """Return (u_all, i_all): KG-enriched user/item embeddings.
 
         L=1: users/items gather a mean of their connected intent nodes.
@@ -393,6 +463,8 @@ class IKGR(GeneralRecommender):
         return u_all, i_all
 
     def forward(self, user, item):
+        if self.use_corona:
+            return self._corona_pair(user, item)
         u = self.dropout_layer(self._emb_users(user))
         i = self.dropout_layer(self._emb_items(item))
         return (u * i).sum(dim=-1)
@@ -400,11 +472,28 @@ class IKGR(GeneralRecommender):
     def calculate_loss(self, interaction):
         user = interaction[self.USER_ID]
         pos = interaction[self.ITEM_ID]
+        has_neg = hasattr(self, "NEG_ITEM_ID") and (self.NEG_ITEM_ID in interaction)
+
+        if self.use_corona:
+            pos_score = self._corona_pair(user, pos)
+            if has_neg:
+                neg = interaction[self.NEG_ITEM_ID]
+                neg_score = self._corona_pair(user, neg)
+                loss = -F.logsigmoid(pos_score - neg_score).mean()
+                reg = (self.user_embedding(user).norm(2).pow(2)
+                       + self.item_embedding(pos).norm(2).pow(2)
+                       + self.item_embedding(neg).norm(2).pow(2))
+            else:
+                label = interaction[self._label_field()].float()
+                loss = F.binary_cross_entropy_with_logits(pos_score, label)
+                reg = (self.user_embedding(user).norm(2).pow(2)
+                       + self.item_embedding(pos).norm(2).pow(2))
+            return loss + self.reg_weight * reg / user.shape[0]
+
         u = self._emb_users(user)
         pos_e = self._emb_items(pos)
         pos_score = (u * pos_e).sum(dim=-1)
 
-        has_neg = hasattr(self, "NEG_ITEM_ID") and (self.NEG_ITEM_ID in interaction)
         if has_neg:
             neg = interaction[self.NEG_ITEM_ID]
             neg_e = self._emb_items(neg)
@@ -412,25 +501,30 @@ class IKGR(GeneralRecommender):
             loss = -F.logsigmoid(pos_score - neg_score).mean()
             reg = (u.norm(2).pow(2) + pos_e.norm(2).pow(2) + neg_e.norm(2).pow(2))
         else:
-            if hasattr(self, "LABEL"):
-                label_field = self.LABEL
-            elif "LABEL_FIELD" in self.config:
-                label_field = self.config["LABEL_FIELD"]
-            else:
-                raise KeyError("Pointwise training requires LABEL_FIELD in config.")
-            label = interaction[label_field].float()
+            label = interaction[self._label_field()].float()
             loss = F.binary_cross_entropy_with_logits(pos_score, label)
             reg = (u.norm(2).pow(2) + pos_e.norm(2).pow(2))
 
         return loss + self.reg_weight * reg / user.shape[0]
 
+    def _label_field(self):
+        if hasattr(self, "LABEL"):
+            return self.LABEL
+        if "LABEL_FIELD" in self.config:
+            return self.config["LABEL_FIELD"]
+        raise KeyError("Pointwise training requires LABEL_FIELD in config.")
+
     def predict(self, interaction):
+        if self.use_corona:
+            return self._corona_pair(interaction[self.USER_ID], interaction[self.ITEM_ID])
         u = self._emb_users(interaction[self.USER_ID])
         i = self._emb_items(interaction[self.ITEM_ID])
         return (u * i).sum(dim=-1)
 
     def full_sort_predict(self, interaction):
         users = interaction[self.USER_ID]
+        if self.use_corona:
+            return self._corona_full(users)
         if self.use_kg and self._kg_ready and self.kg_layers >= 2:
             u_all, i_all = self._propagate()
             return torch.matmul(u_all[users], i_all.t())
