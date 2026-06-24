@@ -283,3 +283,23 @@ python step3.py
 - attention fusion: overall +1.3%이나 **tail −12%, coverage −4%** → facet collapse로 long-tail/다양성(우리 핵심 강점) 손상. ~1.3배 느림. **기각.**
 - **결론: DynLLM 실질 기여 = recency(Step 2). attention(Step 3)은 negative.** Step 4(crowds)는 효과 기대 낮아 보류 권장.
 - **DynLLM 단계 잠정 종료:** 정직한 스토리 = "recency 동적 프로필이 정확도 일부 회복 + long-tail 유지; 학습 attention fusion은 다양성을 희생해 부적합".
+
+
+### ▶ CORONA 단계 — Step 1: 3-3 가중합 late-fusion (= Full 모델) → 시도 후 기각(negative)
+설계 `CORONA_INTEGRATION.md`(Option B, 레포는 참조만). 다이어그램 3-3 `Final=α·intent+β·dynKG+γ·itemSim`을 채널별 분리 점수 + 학습 가중으로 재구현. `model_ikgr.py`에 `use_corona` 토글(`_corona_user/item_channels`/`_corona_pair`/`_corona_full`), `eval_slices.py`에 `IKGR_full` spec. 채널: CF `<e_u,e_i>` / intent+meta-KG `<kg_u,kg_i>` / recency `<dyn_u,e_i>`, BPR 학습.
+
+**TO ablation (12ep, 3seed, mean±std) — `run/slice_eval_TO_result.json`:**
+| 모델 | overall NDCG@10 | tail Recall@10 | tail@30 | cov@10 |
+|---|---|---|---|---|
+| MF (kgoff) | 0.0777±.0005 | 0.0089 | 0.0220 | 0.627 |
+| IKGR (full hetero) | 0.0696±.0017 | 0.0108 | 0.0269 | 0.690 |
+| **IKGR+DynLLM (recency)** | **0.0718±.0011** | **0.0110** | **0.0268** | 0.670 |
+| Full (+CORONA late-fusion) | 0.0678±.0020 | 0.0101 | 0.0236 | 0.715±.062 |
+| BPR | 0.0778±.0004 | 0.0092 | 0.0227 | 0.633 |
+| LightGCN | 0.0836±.0002 | 0.0052 | 0.0127 | 0.332 |
+
+- `IKGR+DynLLM → Full`: overall **−5.6%**, tail@10 **−8%**, tail@30 **−12%** (핵심 강점 손상). cov만 +6.7%지만 **분산 ±0.062로 불안정**(seeds 0.628/0.760/0.757).
+- **진단:** 학습 가중이 **CF로 붕괴(γ=4.44 ≫ β=2.76 ≫ α=1.20)** → long-tail 견인 KG 채널 억압. + 명시적 분리가 암묵적 내적의 cross-term(`<recency_u,kg_i>` 등)을 버려 표현력↓.
+- **판정: 기각(negative).** DynLLM attention fusion과 동일 패턴. 검증된 스토리는 여전히 IKGR+DynLLM 트레이드오프(정확도 일부 양보 ↔ long-tail/coverage robust 우위). 리포트: `CORONA_REPORT.md`.
+- **남은 CORONA(보류):** Step 2(3-1 그래프 후보생성, 무료, 별도 메커니즘) / Step 3(3-2 LLM 필터, 유료). 본 무대는 sparse 코어(k=20/30)·글로벌 시간 split.
+- 재현: `IKGR_SPLIT=TO IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_full python eval_slices.py`. 커밋: `65cbf51`(설계+레포), `1bb9a54`(Step1 구현).
