@@ -88,6 +88,11 @@ def _build_recency(model, train_data, config):
 
 def _train_and_collect(model_arg, extra, rb, paths, seed):
     os.makedirs("run/recbole_slice", exist_ok=True)
+    extra = dict(extra)
+    # CORONA stage-3 (3-1): candidate-set restriction at eval (top-M graph
+    # neighbors). corona_cand=M enables it; it is an eval-only knob, not a model
+    # param, so pop it before building the RecBole config.
+    cand_m = int(extra.pop("corona_cand", 0))
     config = Config(model=model_arg, dataset=rb["dataset"], config_dict=_config(rb, paths, extra, seed))
     dataset = create_dataset(config)
     train_data, valid_data, test_data = data_preparation(config, dataset)
@@ -95,6 +100,13 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
     model = klass(config, train_data.dataset).to(config["device"])
     if getattr(model, "use_dynamic", False):
         _build_recency(model, train_data, config)
+    retriever = None
+    if cand_m > 0:
+        from ikgr_core.corona_retriever import CoronaRetriever
+        retriever = CoronaRetriever(train_data, config,
+                                    kg_pack_path=extra.get("kg_pack_path"),
+                                    meta_kg_path=extra.get("meta_kg_path"))
+        print(f"  [corona] candidate retriever ready (M={cand_m})", flush=True)
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
     t0 = time.time()
     trainer.fit(train_data, valid_data, saved=True, show_progress=False)
@@ -112,6 +124,7 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
     uid_field = config["USER_ID_FIELD"]
     item_pop = np.zeros(n_items, dtype=np.int64)
     per_user = []
+    cand_rec_sum, cand_size_sum, cand_n = 0.0, 0, 0
     with torch.no_grad():
         for interaction, history_index, positive_u, positive_i in test_data:
             interaction = interaction.to(dev)
@@ -119,6 +132,16 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
             B = users.shape[0]
             scores = model.full_sort_predict(interaction).view(B, -1)
             scores[:, 0] = -np.inf
+            users_np = users.cpu().numpy()
+            cand_sets = None
+            if retriever is not None:
+                cand = retriever.candidates(users_np, cand_m)      # [B, M]
+                cand_mask = torch.zeros((B, n_items), dtype=torch.bool, device=dev)
+                ct = torch.from_numpy(cand).to(dev)
+                cand_mask.scatter_(1, ct, True)
+                cand_mask[:, 0] = False
+                scores = scores.masked_fill(~cand_mask, -np.inf)
+                cand_sets = [set(row.tolist()) for row in cand]
             if history_index is not None:
                 hr = history_index[0].cpu().numpy(); hc = history_index[1].cpu().numpy()
                 np.add.at(item_pop, hc, 1)
@@ -127,7 +150,6 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
             else:
                 ucnt = np.zeros(B, dtype=np.int64)
             topk = torch.topk(scores, MAXK, dim=-1)[1].cpu().numpy()
-            users_np = users.cpu().numpy()
             pu = positive_u.cpu().numpy(); pi = positive_i.cpu().numpy()
             rel_by_row = {}
             for r, it in zip(pu, pi):
@@ -136,9 +158,17 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
                 rel = rel_by_row.get(row)
                 if not rel:
                     continue
+                if cand_sets is not None:
+                    cs = cand_sets[row]
+                    cand_rec_sum += sum(1 for it in rel if it in cs) / len(rel)
+                    cand_size_sum += len(cs); cand_n += 1
                 per_user.append({"uid": int(users_np[row]), "activity": int(ucnt[row]),
                                  "topk": topk[row].tolist(), "rel": rel})
-    return per_user, item_pop, train_sec, n_items
+    cand_stats = {}
+    if retriever is not None and cand_n:
+        cand_stats = {"cand_recall": round(cand_rec_sum / cand_n, 4),
+                      "cand_size": round(cand_size_sum / cand_n, 1), "cand_M": cand_m}
+    return per_user, item_pop, train_sec, n_items, cand_stats
 
 
 def _user_metrics(topk, rel_set, k):
@@ -261,6 +291,11 @@ def main():
         "IKGR_full": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
                                   "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
                                   "use_dynamic": True, "use_corona": True}),
+        # CORONA 3-1: graph-neighbor candidate generation (eval-only top-M restriction).
+        # Same trained model as IKGR_dyn, but ranks within a retrieved candidate set.
+        "IKGR_cand": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
+                                  "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
+                                  "use_dynamic": True, "corona_cand": 500}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }
@@ -280,15 +315,17 @@ def main():
             if str(seed) in results[name]["seeds"]:
                 print(f"[skip] {name} seed={seed}", flush=True); continue
             print(f"\n===== {name} seed={seed} =====", flush=True)
-            pu, pop, tsec, ni = _train_and_collect(model_arg, extra, rb, paths, seed)
+            pu, pop, tsec, ni, cstats = _train_and_collect(model_arg, extra, rb, paths, seed)
             rep = slice_report(pu, pop, ni); rep["train_sec"] = tsec
+            if cstats:
+                rep.update(cstats)
             results[name]["seeds"][str(seed)] = rep
             results[name]["agg"] = _aggregate(results[name]["seeds"])
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
             print(f"[{name} s{seed}] overall_ndcg@10={rep['overall']['ndcg@10']} "
                   f"tail_recall@10={rep['long_tail']['recall@10']} cov@10={rep['coverage@10']} "
-                  f"({tsec}s)", flush=True)
+                  f"{('cand_rec='+str(rep.get('cand_recall'))+' ') if cstats else ''}({tsec}s)", flush=True)
     print("\nALL DONE")
 
 

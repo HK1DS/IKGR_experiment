@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+CORONA stage-3 (3-1): dynamic-KG candidate generation / coarse retrieval.
+
+Reimplements the diagram's "dynamic KG exploration -> candidate generation" as a
+distance-aware, graph-neighbor retriever on top of our IKGR/meta-KG. Instead of
+ranking all items (full-sort), each user gets a compact candidate set drawn from
+graph neighbors; the downstream model then ranks ONLY within that set.
+
+Channels (all TRAIN-only, LLM-free, deterministic):
+  - intent : user -> intent -> item        (shared LLM-intent neighbors)
+  - shelf  : user-history -> shelf  -> item (shared popular-shelf neighbors)
+  - author : user-history -> author -> item
+  - pub    : user-history -> publisher -> item
+  - cf     : item-item co-occurrence from the user's history (collaborative)
+
+Candidate score for (u, item) = weighted sum of co-occurrence counts across the
+above channels (a simple "distance prior": more shared neighbors / shorter paths
+-> higher). Top-M items per user form the candidate set.
+
+This is purely a retrieval/eval-side mechanism: it does not change training. It
+is used by eval_slices.py to mask non-candidate items before ranking, and to
+report candidate recall@M (the retrieval ceiling) and average candidate size.
+"""
+import numpy as np
+import torch
+import scipy.sparse as sp
+
+
+def _binary_csr(rows, cols, shape):
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    data = np.ones(len(rows), dtype=np.float32)
+    m = sp.csr_matrix((data, (rows, cols)), shape=shape)
+    m.data[:] = 1.0  # collapse duplicates to binary
+    return m
+
+
+class CoronaRetriever:
+    def __init__(self, train_data, config, kg_pack_path=None, meta_kg_path=None,
+                 weights=None, use_cf=True):
+        ds = train_data.dataset
+        self.n_users = int(ds.user_num)
+        self.n_items = int(ds.item_num)
+        uf, itf = config["USER_ID_FIELD"], config["ITEM_ID_FIELD"]
+        u_tok2id = ds.field2token_id[uf]
+        i_tok2id = ds.field2token_id[itf]
+        inter = ds.inter_feat
+        u = inter[uf].numpy()
+        it = inter[itf].numpy()
+
+        # train user-item binary (history) ------------------------------------
+        self.UI = _binary_csr(u, it, (self.n_users, self.n_items))
+
+        # default channel weights (set membership is robust to exact values) ---
+        w = {"intent": 1.0, "shelf": 1.0, "author": 1.0, "pub": 1.0, "cf": 1.0}
+        if weights:
+            w.update(weights)
+        self.w = w
+        self.use_cf = use_cf
+
+        # intent channel: user<->intent, item<->intent ------------------------
+        self.UInt = None
+        self.IInt = None
+        if kg_pack_path:
+            kp = torch.load(kg_pack_path, map_location="cpu")
+            n_int = int(kp["n_intents"])
+            self.UInt = self._tok_node_mat(kp["user_intents"], u_tok2id, self.n_users, n_int)
+            self.IInt = self._tok_node_mat(kp["item_intents"], i_tok2id, self.n_items, n_int)
+
+        # metadata channels: item<->{shelf,author,publisher} -----------------
+        self.meta = {}
+        if meta_kg_path:
+            mp = torch.load(meta_kg_path, map_location="cpu")
+            for key, nkey, name in [("item_shelves", "n_shelves", "shelf"),
+                                    ("item_authors", "n_authors", "author"),
+                                    ("item_publishers", "n_publishers", "pub")]:
+                if key in mp:
+                    M = self._tok_node_mat(mp[key], i_tok2id, self.n_items, int(mp[nkey]))
+                    if M.nnz > 0:
+                        self.meta[name] = M
+
+        # CF item-item co-occurrence (sparse): Co = UI^T @ UI ------------------
+        self.Co = None
+        if self.use_cf:
+            self.Co = (self.UI.T @ self.UI).tocsr()
+
+    @staticmethod
+    def _tok_node_mat(d, tok2id, n_rows, n_cols):
+        rows, cols = [], []
+        for tok, ids in d.items():
+            rid = tok2id.get(str(tok))
+            if rid is None:
+                continue
+            ids = ids.tolist() if torch.is_tensor(ids) else list(ids)
+            for j in ids:
+                rows.append(rid)
+                cols.append(int(j))
+        return _binary_csr(rows, cols, (n_rows, max(n_cols, 1)))
+
+    def _scores(self, user_ids):
+        """Dense candidate scores [B, n_items] for a (small) batch of user ids."""
+        B = len(user_ids)
+        score = np.zeros((B, self.n_items), dtype=np.float32)
+        UIb = self.UI[user_ids]                       # [B, n_items] history
+        if self.UInt is not None and self.IInt is not None and self.w["intent"]:
+            score += self.w["intent"] * (self.UInt[user_ids] @ self.IInt.T).toarray()
+        for name, M in self.meta.items():
+            if not self.w.get(name):
+                continue
+            prof = UIb @ M                            # [B, n_nodes] user meta profile
+            score += self.w[name] * (prof @ M.T).toarray()
+        if self.Co is not None and self.w["cf"]:
+            score += self.w["cf"] * (UIb @ self.Co).toarray()
+        return score
+
+    def candidates(self, user_ids, M, chunk=256):
+        """Return top-M candidate item ids per user as int64 array [len(users), M].
+        Processed in chunks to bound memory."""
+        user_ids = np.asarray(user_ids, dtype=np.int64)
+        M = min(M, self.n_items)
+        out = np.zeros((len(user_ids), M), dtype=np.int64)
+        for s in range(0, len(user_ids), chunk):
+            uchunk = user_ids[s:s + chunk]
+            sc = self._scores(uchunk)                 # [b, n_items]
+            # top-M by score (unsorted partition is enough for set membership)
+            idx = np.argpartition(-sc, M - 1, axis=1)[:, :M]
+            out[s:s + len(uchunk)] = idx
+        return out
