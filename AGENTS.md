@@ -303,3 +303,18 @@ python step3.py
 - **판정: 기각(negative).** DynLLM attention fusion과 동일 패턴. 검증된 스토리는 여전히 IKGR+DynLLM 트레이드오프(정확도 일부 양보 ↔ long-tail/coverage robust 우위). 리포트: `CORONA_REPORT.md`.
 - **남은 CORONA(보류):** Step 2(3-1 그래프 후보생성, 무료, 별도 메커니즘) / Step 3(3-2 LLM 필터, 유료). 본 무대는 sparse 코어(k=20/30)·글로벌 시간 split.
 - 재현: `IKGR_SPLIT=TO IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_full python eval_slices.py`. 커밋: `65cbf51`(설계+레포), `1bb9a54`(Step1 구현).
+
+
+### ▶ CORONA Step 2 — 3-1 그래프 후보생성 → 구현·평가 완료, naive 버전은 기각(negative)
+`ikgr_core/corona_retriever.py`: train-only·LLM 무관·결정적 retriever. 채널 = intent(user→intent→item) + shelf/author/pub(user 히스토리→meta→item) + CF item-cooccurrence(`Co=UIᵀUI`), scipy.sparse 공기여 합으로 top-M 후보. `eval_slices.py`에 `corona_cand=M` spec knob(후보 외 -inf 마스킹) + `IKGR_cand` spec(=IKGR_dyn 모델, M=500) + 후보 recall@M·크기 기록. 평가 전용(학습 불변), Step1 late-fusion과 독립.
+
+**TO ablation (12ep, 3seed, mean±std):**
+| 모델 | overall NDCG@10 | tail Recall@10 | tail@30 | cov@10 | cand recall@500 |
+|---|---|---|---|---|---|
+| IKGR+DynLLM (full-sort) | 0.0718±.0011 | 0.0110 | 0.0268 | 0.670 | — |
+| IKGR_cand (M=500) | 0.0757±.0007 | 0.0035 | 0.0060 | 0.283 | 0.354 |
+
+- 후보제한: overall **+5.4%**(정밀도↑) but tail@10 **−68%**·tail@30 −78%·coverage **−58%** → 핵심 강점 붕괴, 매우 안정(분산~0).
+- **진단:** 후보 prior 인기 편향(CF 공기여 + ubiquitous shelf 지배) → tail 배제, 후보 recall 천장 0.354. TO split이라 과거 이웃이 미래 아이템 잘 못 덮음. naive 후보생성 = LightGCN형(overall↑/tail·diversity↓).
+- **판정: 기각(negative, 우리 스토리 기준).** mechanism은 완성·재현 가능. **개선 후보:** CF off + intent/meta 가중↑ + popularity 정규화(retriever `weights`/`use_cf` 지원) → 다양성 강화 재시도 시 긍정 여지(미실행).
+- 재현: `IKGR_SPLIT=TO IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_cand python eval_slices.py`. 커밋: `481d8d8`. 리포트: `CORONA_REPORT.md` §5b.
