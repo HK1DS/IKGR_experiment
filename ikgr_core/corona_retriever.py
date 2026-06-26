@@ -39,7 +39,7 @@ def _binary_csr(rows, cols, shape):
 
 class CoronaRetriever:
     def __init__(self, train_data, config, kg_pack_path=None, meta_kg_path=None,
-                 weights=None, use_cf=True):
+                 weights=None, use_cf=True, idf=False, pop_norm=0.0):
         ds = train_data.dataset
         self.n_users = int(ds.user_num)
         self.n_items = int(ds.item_num)
@@ -52,6 +52,10 @@ class CoronaRetriever:
 
         # train user-item binary (history) ------------------------------------
         self.UI = _binary_csr(u, it, (self.n_users, self.n_items))
+        # item popularity (train degree) for popularity de-biasing -------------
+        self.item_pop = np.asarray(self.UI.sum(axis=0)).ravel().astype(np.float64)
+        self.idf = bool(idf)
+        self.pop_norm = float(pop_norm)
 
         # default channel weights (set membership is robust to exact values) ---
         w = {"intent": 1.0, "shelf": 1.0, "author": 1.0, "pub": 1.0, "cf": 1.0}
@@ -67,7 +71,8 @@ class CoronaRetriever:
             kp = torch.load(kg_pack_path, map_location="cpu")
             n_int = int(kp["n_intents"])
             self.UInt = self._tok_node_mat(kp["user_intents"], u_tok2id, self.n_users, n_int)
-            self.IInt = self._tok_node_mat(kp["item_intents"], i_tok2id, self.n_items, n_int)
+            IInt = self._tok_node_mat(kp["item_intents"], i_tok2id, self.n_items, n_int)
+            self.IInt = self._maybe_idf(IInt)
 
         # metadata channels: item<->{shelf,author,publisher} -----------------
         self.meta = {}
@@ -79,12 +84,22 @@ class CoronaRetriever:
                 if key in mp:
                     M = self._tok_node_mat(mp[key], i_tok2id, self.n_items, int(mp[nkey]))
                     if M.nnz > 0:
-                        self.meta[name] = M
+                        self.meta[name] = self._maybe_idf(M)
 
         # CF item-item co-occurrence (sparse): Co = UI^T @ UI ------------------
         self.Co = None
         if self.use_cf:
             self.Co = (self.UI.T @ self.UI).tocsr()
+
+    def _maybe_idf(self, M):
+        """Column-scale an item<->node matrix by IDF to down-weight ubiquitous
+        nodes (e.g. the 'to-read'/'children' shelves that connect to most items
+        and cause popularity bias). No-op if idf disabled."""
+        if not self.idf:
+            return M
+        df = np.asarray((M > 0).sum(axis=0)).ravel().astype(np.float64)  # items per node
+        idf = np.log((self.n_items + 1.0) / (df + 1.0)) + 1.0
+        return (M @ sp.diags(idf)).tocsr()
 
     @staticmethod
     def _tok_node_mat(d, tok2id, n_rows, n_cols):
@@ -113,6 +128,10 @@ class CoronaRetriever:
             score += self.w[name] * (prof @ M.T).toarray()
         if self.Co is not None and self.w["cf"]:
             score += self.w["cf"] * (UIb @ self.Co).toarray()
+        # popularity de-bias: divide candidate score by item_pop^beta so that
+        # popular items stop dominating the candidate set (promotes long-tail).
+        if self.pop_norm > 0:
+            score = score / np.power(self.item_pop + 1.0, self.pop_norm)[None, :]
         return score
 
     def candidates(self, user_ids, M, chunk=256):

@@ -93,6 +93,10 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
     # neighbors). corona_cand=M enables it; it is an eval-only knob, not a model
     # param, so pop it before building the RecBole config.
     cand_m = int(extra.pop("corona_cand", 0))
+    cand_cf = bool(extra.pop("corona_cf", True))
+    cand_idf = bool(extra.pop("corona_idf", False))
+    cand_popnorm = float(extra.pop("corona_popnorm", 0.0))
+    cand_weights = extra.pop("corona_weights", None)
     config = Config(model=model_arg, dataset=rb["dataset"], config_dict=_config(rb, paths, extra, seed))
     dataset = create_dataset(config)
     train_data, valid_data, test_data = data_preparation(config, dataset)
@@ -105,8 +109,11 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
         from ikgr_core.corona_retriever import CoronaRetriever
         retriever = CoronaRetriever(train_data, config,
                                     kg_pack_path=extra.get("kg_pack_path"),
-                                    meta_kg_path=extra.get("meta_kg_path"))
-        print(f"  [corona] candidate retriever ready (M={cand_m})", flush=True)
+                                    meta_kg_path=extra.get("meta_kg_path"),
+                                    weights=cand_weights, use_cf=cand_cf,
+                                    idf=cand_idf, pop_norm=cand_popnorm)
+        print(f"  [corona] candidate retriever ready (M={cand_m}, cf={cand_cf}, "
+              f"idf={cand_idf}, pop_norm={cand_popnorm})", flush=True)
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
     t0 = time.time()
     trainer.fit(train_data, valid_data, saved=True, show_progress=False)
@@ -296,6 +303,13 @@ def main():
         "IKGR_cand": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
                                   "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
                                   "use_dynamic": True, "corona_cand": 500}),
+        # CORONA 3-1 de-biased: drop popularity-biased CF channel, IDF-weight
+        # ubiquitous KG/meta nodes, and divide candidate scores by item_pop^0.5
+        # to push long-tail/niche items into the candidate set (diversity-first).
+        "IKGR_cand_db": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
+                                     "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
+                                     "use_dynamic": True, "corona_cand": 500,
+                                     "corona_cf": False, "corona_idf": True, "corona_popnorm": 0.5}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }
