@@ -11,9 +11,10 @@
 - **Step 1(3-3 가중합 late-fusion = Full 모델)을 구현·검증.** 무료, 추가 LLM 0, "통합이 개별보다 낫다"는 ablation 주장에 직접 대응하는 부분.
 - **Step 1 결론(정직한 negative):** 명시적 채널 분리 + 학습 가중(α,β,γ) late-fusion은 기존 **암묵적 결합임베딩 내적(IKGR+DynLLM)을 이기지 못함.** overall −5.6%, long-tail −8%(@10)·−12%(@30)로 **우리 핵심 강점(long-tail)을 오히려 손상**. 유일한 이득(coverage +6.7%)은 분산이 매우 커서(±0.062) robust하지 않음.
 - **Step 1 진단:** 학습된 가중이 **CF 채널로 붕괴(γ=4.44 ≫ β=2.76 ≫ α=1.20)** → long-tail을 견인하는 KG 채널을 down-weight. 또한 명시적 분리는 암묵적 합에 있던 채널 간 cross-term(`<recency_u, kg_i>` 등)을 버림.
-- **Step 2(3-1 그래프 후보생성)를 구현·검증.** train-only·LLM 무관·결정적 retriever. **결론도 negative(우리 스토리 기준):** M=500 후보제한은 overall NDCG +5.4%이나 **tail Recall −68%·coverage −58%로 강점을 붕괴**. 후보 prior가 **인기 편향**(CF 공기여 + 인기 shelf 지배)이라 후보 recall 천장이 0.354에 그침.
-- **판정:** Step 1·Step 2 모두 현 dense 환경에선 **기각**(DynLLM attention fusion과 동일 패턴). Step 3(3-2 LLM 필터)은 별도 메커니즘·유료라 후순위. 검증된 스토리는 여전히 IKGR+DynLLM 트레이드오프.
-- **다음 후보:** 후보 prior **인기 편향 제거**(CF 제거 + intent/meta 가중 + popularity 정규화)로 Step 2를 다양성 강화 쪽으로 재시도하면 긍정 여지 있음(미실행).
+- **Step 2(3-1 그래프 후보생성)를 구현·검증.** train-only·LLM 무관·결정적 retriever.
+  - **naive 버전 = negative(우리 스토리 기준):** M=500 후보제한은 overall NDCG +5.4%이나 **tail Recall −68%·coverage −58%**. 후보 prior가 인기 편향(CF 공기여 + 인기 shelf 지배), 후보 recall 천장 0.354.
+  - **인기 편향 제거 버전 = ✅ positive(첫 긍정 CORONA 결과):** CF 채널 제거 + KG/meta 노드 IDF 가중 + item-popularity 정규화(pop_norm=0.5). **tail Recall@10 0.0275 = IKGR+DynLLM +150%·BPR +199%·LightGCN +429%** (robust), tail@30 +115% vs full-sort, coverage 0.634(full-sort급 유지). 대가는 overall NDCG −60%(후보 recall 천장 0.145 — 인기 아이템을 의도적으로 후보에서 배제). 정직한 **diversity-first 트레이드오프**.
+- **판정:** Step 1(late-fusion)은 기각. **Step 2는 편향 제거 시 long-tail/diversity에 강한 robust 우위 → CORONA의 검증된 기여.** Step 3(3-2 LLM 필터)은 별도·유료라 후순위. 졸업작품 스토리: IKGR+DynLLM(정확도 일부 양보↔long-tail/coverage) + **CORONA 편향제거 후보생성(overall 양보↔long-tail 2.5배·diversity)**.
 
 ---
 
@@ -65,30 +66,36 @@ Final(u,i) = γ·⟨e_u, e_i⟩            # CF / item-similarity 채널
 | 모델 | overall NDCG@10 | tail Recall@10 | tail@30 | cov@10 | cand recall@500 |
 |---|---|---|---|---|---|
 | IKGR+DynLLM (full-sort) | 0.0718±.0011 | 0.0110±.0003 | 0.0268 | 0.670 | — |
-| IKGR_cand (M=500) | **0.0757±.0007** | 0.0035±.000 | 0.0060 | 0.283 | 0.354 |
+| IKGR_cand (naive) | **0.0757±.0007** | 0.0035±.000 | 0.0060 | 0.283 | 0.354 |
+| **IKGR_cand_db (편향제거)** | 0.0288±.0004 | **0.0275±.0005** | **0.0577** | 0.634 | 0.145 |
+| BPR | 0.0778 | 0.0092 | 0.0227 | 0.633 | — |
+| LightGCN | 0.0836 | 0.0052 | 0.0127 | 0.332 | — |
 
-- `full-sort → 후보제한(M=500)`: overall **+5.4%**(정밀도↑), 그러나 tail@10 **−68%**·tail@30 −78%·coverage **−58%** → 우리 핵심 강점 붕괴. 매우 안정(분산~0).
-- **진단:** 후보 prior가 **인기 편향**. CF 공기여(`Co`)와 ubiquitous shelf("to-read"/"children" 등)가 후보를 인기 아이템에 쏠리게 해 tail 아이템을 배제 → **후보 recall 천장 0.354**(미래 relevant의 35%만 도달). TO split이라 과거 그래프 이웃이 미래 아이템을 잘 못 덮는 점도 천장을 낮춤.
-- **판정:** naive 후보생성은 LightGCN처럼 "overall↑ / tail·diversity↓"로 작동 → 우리 스토리 기준 **negative**. 단 mechanism은 완성·재현 가능.
-- **개선 후보(미실행):** 후보 prior 인기 편향 제거 — CF 채널 제거 + intent/meta 가중↑ + popularity 정규화(Jaccard/cosine, ubiquitous 노드 down-weight). retriever가 `weights`/`use_cf` 인자로 이미 지원 → 다양성 강화 쪽으로 재시도하면 긍정 여지.
+- **naive(M=500):** `full-sort → 후보제한`: overall **+5.4%**(정밀도↑), 그러나 tail@10 **−68%**·tail@30 −78%·coverage **−58%** → 핵심 강점 붕괴. 매우 안정(분산~0).
+- **naive 진단:** 후보 prior가 **인기 편향**. CF 공기여(`Co`)와 ubiquitous shelf("to-read"/"children" 등)가 후보를 인기 아이템에 쏠리게 해 tail 아이템을 배제 → **후보 recall 천장 0.354**(미래 relevant의 35%만 도달). TO split이라 과거 그래프 이웃이 미래 아이템을 잘 못 덮는 점도 천장을 낮춤. naive 후보생성 = LightGCN형(overall↑/tail·diversity↓) → **negative**.
+- **편향제거(`IKGR_cand_db`): CF 채널 off + KG/meta 노드 IDF 컬럼가중(ubiquitous 노드 억제) + 후보점수 ÷ item_pop^0.5.**
+  - tail Recall@10 **0.0275 = IKGR+DynLLM +150%·BPR +199%·LightGCN +429%** (robust, std 0.0005). tail@30 **0.0577 = full-sort +115%·LightGCN +354%**. coverage 0.634 ≈ full-sort/BPR(다양성 유지).
+  - 대가: overall NDCG **−60%**(0.0718→0.0288). pop 정규화가 인기 아이템(미래에도 자주 relevant)을 후보에서 밀어내 **후보 recall 천장이 0.145로 더 낮아짐** → overall 상한이 낮음.
+  - **해석:** 명시적 diversity-first 검색. "정확도를 더 양보하는 대신 long-tail Recall을 2.5배·다양성 유지". pop_norm/idf가 트레이드오프 노브 → 덜 공격적(pop_norm=0.25 등)으로 균형점 탐색 가능(미실행).
+- **판정: 편향제거 Step 2는 ✅ positive** — CORONA의 검증된 기여(long-tail/diversity). naive는 기각.
 
 ## 6. 재현성
 - from-scratch 독립 학습(이전 런/체크포인트 비의존). late-fusion·채널 집계·recency·후보생성 모두 LLM 무관 결정적(seed 고정); intent 채널만 저장된 LLM 출력(`step2_related_intents.csv`)에 의존.
 - 재현:
   ```
   IKGR_SPLIT=TO IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 \
-  IKGR_SPECS=IKGR_full,IKGR_cand python eval_slices.py   # -> run/slice_eval_TO_result.json
+  IKGR_SPECS=IKGR_full,IKGR_cand,IKGR_cand_db python eval_slices.py   # -> run/slice_eval_TO_result.json
   ```
   (비교 행 IKGR_kgoff/IKGR_full_hetero/IKGR_dyn/BPR/LightGCN은 DynLLM 단계에서 동일 파일에 적재됨.)
 
 ## 7. 한계 & 다음 단계 후보
 - **Step 1(가중합)이 negative**라 Full 통합의 "정확도 우위" 주장은 이 환경에선 성립 안 함. 단 이는 **dense k=100 + per-user 시간 split**의 구조적 한계(CF 홈그라운드)와 일치.
 - **남은 CORONA 메커니즘:**
-  - ~~Step 2 (3-1 그래프 후보생성, 무료)~~ → **구현·평가 완료(§5b), naive 버전은 negative.** 인기 편향 제거 변형(CF off + popularity 정규화)이 다음 후보.
+  - **Step 2 (3-1 그래프 후보생성, 무료) → 완료(§5b).** naive는 negative이나 **편향제거 버전이 long-tail/diversity에서 positive**(검증된 CORONA 기여). pop_norm/idf 균형점 튜닝 여지.
   - Step 3 (3-2 LLM 필터, 유료): 후보 top-M을 LLM로 prune. 소규모 cold/long-tail 슬라이스에서만 검증 권장. Qwen 등 저렴 provider 전제.
 - **본 무대:** sparse 코어(k=20/30)·글로벌 시간 split에서 KG/통합이 빛날 가능성(LLM 비용 → Qwen/DeepSeek 전환). 현재 dense 환경에선 통합의 가치는 "정확도"가 아니라 "다양성/coverage"에 한정됨.
 
 ## 8. 산출물 / 커밋
-- 코드: `ikgr_core/model_ikgr.py`(`use_corona` late-fusion), `ikgr_core/corona_retriever.py`(그래프 후보생성), `eval_slices.py`(`IKGR_full`·`IKGR_cand` spec + 후보 마스킹/recall).
-- 결과: `run/slice_eval_TO_result.json`(`IKGR_full`, `IKGR_cand`). 설계: `CORONA_INTEGRATION.md`. 참조: `CORONA-main/`(공식).
-- 커밋: `65cbf51`(설계+레포), `1bb9a54`(Step1 late-fusion), `481d8d8`(Step2 후보생성).
+- 코드: `ikgr_core/model_ikgr.py`(`use_corona` late-fusion), `ikgr_core/corona_retriever.py`(그래프 후보생성 + idf/pop_norm 편향제거), `eval_slices.py`(`IKGR_full`·`IKGR_cand`·`IKGR_cand_db` spec + 후보 마스킹/recall).
+- 결과: `run/slice_eval_TO_result.json`(`IKGR_full`, `IKGR_cand`, `IKGR_cand_db`). 설계: `CORONA_INTEGRATION.md`. 참조: `CORONA-main/`(공식).
+- 커밋: `65cbf51`(설계+레포), `1bb9a54`(Step1 late-fusion), `481d8d8`(Step2 후보생성), `22abbe4`(Step2b 편향제거).

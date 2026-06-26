@@ -318,3 +318,22 @@ python step3.py
 - **진단:** 후보 prior 인기 편향(CF 공기여 + ubiquitous shelf 지배) → tail 배제, 후보 recall 천장 0.354. TO split이라 과거 이웃이 미래 아이템 잘 못 덮음. naive 후보생성 = LightGCN형(overall↑/tail·diversity↓).
 - **판정: 기각(negative, 우리 스토리 기준).** mechanism은 완성·재현 가능. **개선 후보:** CF off + intent/meta 가중↑ + popularity 정규화(retriever `weights`/`use_cf` 지원) → 다양성 강화 재시도 시 긍정 여지(미실행).
 - 재현: `IKGR_SPLIT=TO IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_cand python eval_slices.py`. 커밋: `481d8d8`. 리포트: `CORONA_REPORT.md` §5b.
+
+
+### ▶✅ CORONA Step 2b — 인기 편향 제거 후보생성 → positive (첫 긍정 CORONA 결과)
+naive 후보생성(인기 편향)을 제거: `corona_retriever.py`에 **idf**(item↔node 행렬 컬럼 IDF 가중 → "to-read"/"children" 등 ubiquitous 노드 억제) + **pop_norm**(후보점수 ÷ item_pop^β) 추가. `use_cf=False`로 인기 편향 CF 채널 제거. `eval_slices.py`에 `corona_cf/corona_idf/corona_popnorm/corona_weights` 전달 + `IKGR_cand_db` spec(cf off, idf on, pop_norm=0.5).
+
+**TO ablation (12ep, 3seed, mean±std):**
+| 모델 | overall NDCG@10 | tail Recall@10 | tail@30 | cov@10 | cand rec@500 |
+|---|---|---|---|---|---|
+| IKGR+DynLLM (full-sort) | 0.0718 | 0.0110 | 0.0268 | 0.670 | — |
+| IKGR_cand (naive) | 0.0757 | 0.0035 | 0.0060 | 0.283 | 0.354 |
+| **IKGR_cand_db (편향제거)** | 0.0288 | **0.0275±.0005** | **0.0577** | 0.634 | 0.145 |
+| BPR | 0.0778 | 0.0092 | 0.0227 | 0.633 | — |
+| LightGCN | 0.0836 | 0.0052 | 0.0127 | 0.332 | — |
+
+- **편향제거 = ✅ positive:** tail Recall@10 0.0275 = **IKGR+DynLLM +150%·BPR +199%·LightGCN +429%** (robust, std 0.0005). tail@30 0.0577 = full-sort +115%·LightGCN +354%. coverage 0.634 ≈ full-sort(다양성 유지).
+- **대가:** overall NDCG −60%(0.0718→0.0288). pop 정규화가 인기(미래에도 자주 relevant) 아이템을 후보에서 배제 → 후보 recall 천장 0.145로 더 낮음.
+- **해석:** 명시적 diversity-first 검색 = CORONA의 검증된 기여(long-tail 2.5배·diversity 유지, overall 양보). pop_norm/idf가 트레이드오프 노브(덜 공격적 균형점 탐색 가능, 미실행).
+- 재현: `IKGR_SPLIT=TO IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_cand_db python eval_slices.py`. 커밋: `22abbe4`. 리포트: `CORONA_REPORT.md` §5b.
+- **CORONA 무료 단계 종료.** 졸업작품 스토리 완성: IKGR(intent+meta KG, long-tail robust) → DynLLM(recency, 정확도 회복+long-tail 유지) → CORONA(편향제거 후보생성, long-tail 2.5배·diversity). 남은 것: Step 3 LLM 필터(유료, 슬라이스 한정) 또는 2순위 k-파라미터 오케스트레이션 → k 스윕.
