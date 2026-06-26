@@ -64,7 +64,7 @@ def _safe_eval_list(s):
     return []
 
 def main():
-    cfg = yaml.safe_load(open("config.yaml"))
+    cfg = yaml.safe_load(open(os.environ.get("IKGR_CONFIG", "config.yaml"), encoding="utf-8"))
     paths = cfg["paths"]
     rag_cfg = cfg["rag"]
     llm_cfg = cfg["llm"]

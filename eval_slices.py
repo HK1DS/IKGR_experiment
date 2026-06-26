@@ -274,9 +274,9 @@ def _aggregate(per_seed):
 
 
 def main():
-    cfg = yaml.safe_load(open("config.yaml")); paths, rb = cfg["paths"], cfg["recbole"]
-    kg = os.path.abspath("run/kg_pack.pt")
-    meta = os.path.abspath("run/meta_kg_pack.pt")
+    cfg = yaml.safe_load(open(os.environ.get("IKGR_CONFIG", "config.yaml"), encoding="utf-8")); paths, rb = cfg["paths"], cfg["recbole"]
+    kg = os.path.abspath(paths.get("kg_pack", "run/kg_pack.pt"))
+    meta = os.path.abspath(paths.get("meta_kg_pack", "run/meta_kg_pack.pt"))
     all_specs = {
         "IKGR_kgoff":   (IKGRModel, {"use_kg": False}),
         "IKGR_kgon_L1": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32}),
@@ -317,7 +317,10 @@ def main():
     spec_names = os.environ.get("IKGR_SPECS", ",".join(all_specs)).split(",")
 
     split = os.environ.get("IKGR_SPLIT", "RS").upper()
-    out_path = "run/slice_eval_result.json" if split == "RS" else f"run/slice_eval_{split}_result.json"
+    wd = paths.get("workdir", "run/")
+    os.makedirs(wd, exist_ok=True)
+    fname = "slice_eval_result.json" if split == "RS" else f"slice_eval_{split}_result.json"
+    out_path = os.path.join(wd, fname)
     results = json.load(open(out_path, encoding="utf-8")) if os.path.exists(out_path) else {}
 
     for name in spec_names:

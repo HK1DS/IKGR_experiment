@@ -38,7 +38,7 @@ def run_one(model_name, dataset_name, base_config):
     return best_valid_result, test_result
 
 def main():
-    cfg = yaml.safe_load(open("config.yaml"))
+    cfg = yaml.safe_load(open(os.environ.get("IKGR_CONFIG", "config.yaml"), encoding="utf-8"))
     paths, rb = cfg["paths"], cfg["recbole"]
 
     ckpt_dir = os.path.abspath("run/recbole_baselines")

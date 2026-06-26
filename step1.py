@@ -46,7 +46,7 @@ def parse_intent_list(s):
     return []
 
 def main():
-    cfg = yaml.safe_load(open("config.yaml"))
+    cfg = yaml.safe_load(open(os.environ.get("IKGR_CONFIG", "config.yaml"), encoding="utf-8"))
     in_csv = cfg["paths"]["input_csv"]
     out_csv = cfg["paths"]["step1_output"]
     work = cfg["paths"]["workdir"]

@@ -19,7 +19,7 @@ from ikgr_core.model_ikgr import IKGR as IKGRModel
 
 
 def main():
-    cfg = yaml.safe_load(open("config.yaml"))
+    cfg = yaml.safe_load(open(os.environ.get("IKGR_CONFIG", "config.yaml"), encoding="utf-8"))
     paths, rb = cfg["paths"], cfg["recbole"]
 
     use_kg = os.environ.get("IKGR_USE_KG", "1").lower() in ("1", "true", "yes")
