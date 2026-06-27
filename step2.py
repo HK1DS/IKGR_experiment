@@ -96,7 +96,7 @@ def main():
     sys_prompt = "You are a helpful assistant that returns ONLY JSON lists of integers."
 
     # 3) For each row, expand related intents for user & item via RAG + LLM selection
-    import os, time, requests
+    import time, requests
     cache_path = os.path.join(paths["workdir"], "step2_cache.json")
     if os.path.exists(cache_path):
         with open(cache_path, "r", encoding="utf-8") as f:
