@@ -129,6 +129,10 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
     dev = config["device"]
     n_items = int(dataset.item_num)
     uid_field = config["USER_ID_FIELD"]
+    # Cache all-item representations once (huge full-sort speedup for KG/meta
+    # models, which otherwise rebuild every item's embedding per test batch).
+    if hasattr(model, "eval_cache_items"):
+        model.eval_cache_items()
     item_pop = np.zeros(n_items, dtype=np.int64)
     per_user = []
     cand_rec_sum, cand_size_sum, cand_n = 0.0, 0, 0

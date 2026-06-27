@@ -191,6 +191,14 @@ class IKGR(GeneralRecommender):
             self._build_kg(dataset)
         if self.use_meta_kg:
             self._build_meta_kg(dataset)
+        # Full-sort eval cache: all-item representations are expensive to recompute
+        # (KG/meta node gather over every item) and were being rebuilt for EVERY
+        # test-user batch. Cache them once per eval pass (set via eval_cache_items).
+        self._item_cache_on = False
+        self._cache_i_all = None
+        self._cache_icf = None
+        self._cache_ikg = None
+        self._cache_u_all = None
 
     # ---- KG construction (learnable intent nodes + normalized user/item<->intent adjacency)
     def _build_kg(self, dataset):
@@ -427,8 +435,8 @@ class IKGR(GeneralRecommender):
 
     def _corona_full(self, uids):
         ucf, ukg, udyn = self._corona_user_channels(uids)
-        all_items = torch.arange(self.n_items, device=uids.device)
-        icf, ikg = self._corona_item_channels(all_items)
+        self._ensure_item_cache()
+        icf, ikg = self._cache_icf, self._cache_ikg
         s = self.corona_gamma * torch.matmul(ucf, icf.t())
         if ukg is not None and ikg is not None:
             s = s + self.corona_alpha * torch.matmul(ukg, ikg.t())
@@ -436,6 +444,36 @@ class IKGR(GeneralRecommender):
             s = s + self.corona_beta * torch.matmul(udyn, icf.t())
         return s
 
+    def _ensure_item_cache(self):
+        """Lazily build the all-item representation cache during an eval pass.
+        full_sort_predict is only called in eval mode (post-fit loop AND RecBole's
+        in-training validation), so caching here avoids rebuilding every item's
+        KG/meta-gathered embedding for every user batch. The cache is invalidated
+        at the start of each training step (calculate_loss/forward), so it is
+        always rebuilt with up-to-date weights for the next validation."""
+        if self._item_cache_on:
+            return
+        with torch.no_grad():
+            dev = self.item_embedding.weight.device
+            all_items = torch.arange(self.n_items, device=dev)
+            if self.use_corona:
+                self._cache_icf, self._cache_ikg = self._corona_item_channels(all_items)
+            elif self.use_kg and self._kg_ready and self.kg_layers >= 2:
+                self._cache_u_all, self._cache_i_all = self._propagate()
+            else:
+                self._cache_i_all = self._emb_items(all_items)
+        self._item_cache_on = True
+
+    def eval_cache_items(self):
+        """Force a fresh all-item cache (explicit entry point for eval harness)."""
+        self._item_cache_on = False
+        self._ensure_item_cache()
+
+    def clear_eval_cache(self):
+        self._item_cache_on = False
+        self._cache_i_all = self._cache_icf = self._cache_ikg = None
+
+    def _propagate(self):
         """Return (u_all, i_all): KG-enriched user/item embeddings.
 
         L=1: users/items gather a mean of their connected intent nodes.
@@ -463,6 +501,7 @@ class IKGR(GeneralRecommender):
         return u_all, i_all
 
     def forward(self, user, item):
+        self._item_cache_on = False
         if self.use_corona:
             return self._corona_pair(user, item)
         u = self.dropout_layer(self._emb_users(user))
@@ -470,6 +509,7 @@ class IKGR(GeneralRecommender):
         return (u * i).sum(dim=-1)
 
     def calculate_loss(self, interaction):
+        self._item_cache_on = False
         user = interaction[self.USER_ID]
         pos = interaction[self.ITEM_ID]
         has_neg = hasattr(self, "NEG_ITEM_ID") and (self.NEG_ITEM_ID in interaction)
@@ -525,11 +565,10 @@ class IKGR(GeneralRecommender):
         users = interaction[self.USER_ID]
         if self.use_corona:
             return self._corona_full(users)
+        self._ensure_item_cache()
         if self.use_kg and self._kg_ready and self.kg_layers >= 2:
-            u_all, i_all = self._propagate()
-            return torch.matmul(u_all[users], i_all.t())
+            u_all = self._propagate()[0]
+            return torch.matmul(u_all[users], self._cache_i_all.t())
         u = self._emb_users(users)                                   # [B, d]
-        all_items = torch.arange(self.n_items, device=users.device)
-        i_all = self._emb_items(all_items)                           # [n_items, d]
-        return torch.matmul(u, i_all.t())
+        return torch.matmul(u, self._cache_i_all.t())
 
