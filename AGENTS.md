@@ -337,3 +337,33 @@ naive 후보생성(인기 편향)을 제거: `corona_retriever.py`에 **idf**(it
 - **해석:** 명시적 diversity-first 검색 = CORONA의 검증된 기여(long-tail 2.5배·diversity 유지, overall 양보). pop_norm/idf가 트레이드오프 노브(덜 공격적 균형점 탐색 가능, 미실행).
 - 재현: `IKGR_SPLIT=TO IKGR_EPOCHS=12 IKGR_SEEDS=2020,2021,2022 IKGR_SPECS=IKGR_cand_db python eval_slices.py`. 커밋: `22abbe4`. 리포트: `CORONA_REPORT.md` §5b.
 - **CORONA 무료 단계 종료.** 졸업작품 스토리 완성: IKGR(intent+meta KG, long-tail robust) → DynLLM(recency, 정확도 회복+long-tail 유지) → CORONA(편향제거 후보생성, long-tail 2.5배·diversity). 남은 것: Step 3 LLM 필터(유료, 슬라이스 한정) 또는 2순위 k-파라미터 오케스트레이션 → k 스윕.
+
+
+### ▶✅ k-스윕 2순위: 파이프라인 k-파라미터화 + k=50 실행 (가설 robust 확정)
+`run_pipeline.py --k K`로 격리된 per-k 레이아웃(`data/kc_k{K}/`, `run_k{K}/` + `config.k{K}.yaml`)에서 전체 파이프라인(A apply_k_core / B step1 / C step2 / D banks+KG+meta+convert+timestamp / E eval) 실행. config-읽는 스크립트는 `IKGR_CONFIG` env로 redirect. k=100 캐시 재사용으로 비용 절감(프로필 텍스트 키).
+
+**k=50 실행:** 유저 33,070 / 아이템 17,537 / 인터랙션 4,740,194. LLM 신규 호출 24,410건(k=100 캐시 15,198 재사용) ≈ $12~15 실비. meta-KG: author 9,004 / publisher 1,948 / shelf 1,421.
+
+**⚠️ 평가 폭증 버그 수정 (커밋 `78b86e2`):** full_sort_predict가 유저 배치마다 전체 아이템 KG/meta 임베딩을 재계산 → k=100엔 OK였으나 k=50(유저 3배·아이템 2.5배·meta 4관계)에서 spec당 수 시간으로 폭발. **lazy all-item 캐시**(`_ensure_item_cache`, 학습 스텝마다 무효화)로 사후 평가 + RecBole 내부 검증 모두 커버. full_hetero 1ep 113초로 정상화. + 잠복 버그 `def _propagate` 누락 복구.
+
+**k=50 결과 (3-seed, TO, 12ep, mean±std) — `run_k50/slice_eval_TO_result.json`:**
+| 모델 | NDCG@10 | tail@10 | tail@30 | cov@10 |
+|---|---|---|---|---|
+| MF (kgoff) | 0.0735±.0014 | 0.0067 | 0.0160 | 0.452 |
+| IKGR (full_hetero) | 0.0688±.0012 | 0.0102 | 0.0222 | 0.600 |
+| IKGR+DynLLM | 0.0711±.0017 | 0.0120 | 0.0255 | 0.612 |
+| CORONA (cand_db) | 0.0184±.0001 | **0.0246** | **0.0458** | 0.526 |
+| BPR | 0.0731±.0010 | 0.0064 | 0.0155 | 0.455 |
+| LightGCN | 0.0774±.0003 | 0.0028 | 0.0074 | 0.225 |
+
+**핵심 (가설 robust 확정): sparse해질수록 long-tail 우위 증가 (tail@10 vs MF):**
+| 모델 | k=100 | k=50 |
+|---|---|---|
+| IKGR | +21% | **+52%** |
+| IKGR+DynLLM | +24% | **+79%** |
+| CORONA | +209% | **+267%** |
+
+- 3시드 모두 분산 ~0으로 robust(frozen+meta-KG는 learnable intent node의 불안정성 없음). 모든 컴포넌트의 long-tail 이득이 k=100→k=50에서 전부 증가 → "intent-KG/통합은 sparse·long-tail에서 빛난다"를 다중시드로 입증.
+- CORONA cand_db: diversity-first 트레이드오프(overall 0.018 폭락, tail 압도적 1위). LightGCN: overall 1위·tail/coverage 최악(인기편향 심화).
+- 재현: `python run_pipeline.py --k 50` (또는 `--steps E --seeds 2020,2021,2022`). 커밋: `3479af1`(오케스트레이터), `78b86e2`(eval 캐시 수정), `de5de62`(k=50 seed-2020).
+- **다음 후보:** k=30 스윕(추세 1점 더, LLM 추가 ~$? 실측 필요, 예산 내) / CORONA Step 3 LLM 필터(슬라이스 한정).
