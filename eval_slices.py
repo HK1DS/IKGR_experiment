@@ -33,7 +33,8 @@ COV_K = 10
 
 def _config(rb, paths, extra, seed):
     split = os.environ.get("IKGR_SPLIT", "RS").upper()
-    load_inter = ["user_id", "item_id", "rating"] + (["timestamp"] if split == "TO" else [])
+    is_temporal = split in ("TO", "TO_GLOBAL")
+    load_inter = ["user_id", "item_id", "rating"] + (["timestamp"] if is_temporal else [])
     cd = {
         "epochs": int(os.environ.get("IKGR_EPOCHS", rb["epochs"])),
         "metrics": rb["metrics"], "topk": rb["topk"],
@@ -52,6 +53,14 @@ def _config(rb, paths, extra, seed):
         cd["TIME_FIELD"] = "timestamp"
         cd["eval_args"] = {"split": {"RS": [0.8, 0.1, 0.1]}, "order": "TO",
                            "group_by": "user", "mode": "full"}
+    elif split == "TO_GLOBAL":
+        # GLOBAL temporal split (not grouped by user): a single time cutoff over
+        # ALL interactions, so users active only in the late window become genuine
+        # cold-start users (few/no train interactions). 70/10/20 -> bigger, colder
+        # test window. group_by=None disables per-user grouping.
+        cd["TIME_FIELD"] = "timestamp"
+        cd["eval_args"] = {"split": {"RS": [0.7, 0.1, 0.2]}, "order": "TO",
+                           "group_by": None, "mode": "full"}
     cd.update(extra)
     return cd
 
@@ -235,6 +244,18 @@ def slice_report(per_user, item_pop, n_items):
         m, n = _avg(rows)
         bucket_metrics[name] = {"n_users": n, "ndcg@10": m["ndcg@10"], "recall@10": m["recall@10"]}
 
+    # ABSOLUTE cold-start buckets by # train interactions (not quantiles). These
+    # isolate genuinely cold users -- meaningful under the global temporal split
+    # (TO_GLOBAL), where users appearing only in the test window have 0 / few
+    # train interactions. (Under per-user TO every user is warm, so these are ~empty.)
+    abs_buckets = {}
+    for name, lo, hi in [("cold0_train", 0, 0), ("cold_1_5", 1, 5),
+                         ("cold_6_20", 6, 20), ("warm_gt20", 21, 10**9)]:
+        rows = [(r["topk"], r["rel"]) for r in per_user if lo <= r["activity"] <= hi]
+        m, n = _avg(rows)
+        abs_buckets[name] = {"n_users": n, "ndcg@10": m["ndcg@10"],
+                             "recall@10": m["recall@10"], "recall@30": m["recall@30"]}
+
     # coverage@10 and novelty (mean self-information of recommended items)
     rec_items = set()
     pop_sum, pop_cnt = 0.0, 0
@@ -255,6 +276,7 @@ def slice_report(per_user, item_pop, n_items):
         "long_tail": {"head_cut_pop": head_cut, "n_tail_items": int(is_tail.sum()),
                       "n_users_with_tail_rel": n_tail, **tail},
         "cold_start_buckets": dict(sorted(bucket_metrics.items())),
+        "cold_abs_buckets": abs_buckets,
         "activity_q_20_40_60_80": [float(x) for x in q],
         "coverage@10": coverage, "novelty_bits": novelty, "avg_rec_popularity": avg_rec_pop,
     }
