@@ -214,6 +214,10 @@ run/*
 !run/*_result.json
 !run/ikgr_baseline_result.json
 
+# Per-k pipeline run dirs (run_k30/, run_k50/, ...): keep only result JSONs
+run_k*/*
+!run_k*/*_result.json
+
 # TensorBoard run logs (RecBole) - noise, not tracked
 log_tensorboard/
 
