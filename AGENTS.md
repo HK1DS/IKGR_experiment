@@ -367,3 +367,28 @@ naive 후보생성(인기 편향)을 제거: `corona_retriever.py`에 **idf**(it
 - CORONA cand_db: diversity-first 트레이드오프(overall 0.018 폭락, tail 압도적 1위). LightGCN: overall 1위·tail/coverage 최악(인기편향 심화).
 - 재현: `python run_pipeline.py --k 50` (또는 `--steps E --seeds 2020,2021,2022`). 커밋: `3479af1`(오케스트레이터), `78b86e2`(eval 캐시 수정), `de5de62`(k=50 seed-2020).
 - **다음 후보:** k=30 스윕(추세 1점 더, LLM 추가 ~$? 실측 필요, 예산 내) / CORONA Step 3 LLM 필터(슬라이스 한정).
+
+
+### ▶✅✅ 글로벌 시간 split (cold-start) — 가장 약했던 주장 정면 입증 (핵심 결과)
+`IKGR_SPLIT=TO_GLOBAL`(단일 글로벌 시간 컷 70/10/20, group_by=None) + `cold_abs_buckets`(train 인터랙션 수 절대 버킷: 0 / 1-5 / 6-20 / >20). k=50 데이터 재사용(LLM 0). de-risk로 cold 유저 생존 확인(cold0=1215). 커밋 `4d54792`(코드).
+
+**k=50 TO_GLOBAL (3-seed, 12ep) — `run_k50/slice_eval_TO_GLOBAL_result.json`:**
+
+순수 cold 유저(train 0개, 1,215명) Recall@10 / NDCG@10:
+| 모델 | cold0 R@10 | cold0 NDCG@10 | cold0 R@30 |
+|---|---|---|---|
+| MF | 0.0022 | 0.0222 | 0.0058 |
+| BPR | 0.0019 | 0.0187 | 0.0053 |
+| LightGCN | 0.0056 | 0.0543 | 0.0132 |
+| **IKGR** | **0.0485 (~22×MF)** | **0.4350 (~20×MF)** | **0.1089 (~19×MF)** |
+| IKGR+Dyn | 0.0458 | 0.4120 | 0.1044 |
+| CORONA | 0.0083 | 0.0980 | 0.0129 |
+
+단조 추세 (Recall@10, 유저가 warm해질수록 KG 우위↓): cold0 IKGR/MF +2100% → 1-5 +58% → 6-20 +24% → warm(>20) +2%(동률).
+
+overall NDCG@10 (글로벌 split): **IKGR 0.120 > LightGCN 0.097 > BPR 0.090 ≈ MF 0.090**. cov: MF 0.535 / IKGR 0.366.
+
+- **핵심:** cold 유저는 id-임베딩이 랜덤 → CF(MF/BPR/LightGCN)는 사실상 랜덤 추천(R@10 ~0.002). IKGR은 **유저 프로필 기반 intent/meta-KG로 임베딩을 채워** 이력 0에도 의미 있는 추천(R@10 0.0485). "intent-KG가 cold-start를 해결한다"의 직접 증명. + 글로벌 split에선 IKGR가 overall 정확도도 1위(per-user TO의 정확도 양보가 cold 섞이면 역전).
+- CORONA cand_db: cold0 약함(0.0083) — diversity/long-tail 도구지 cold-start 도구 아님(예상대로). IKGR+Dyn: cold0서 IKGR보다 미세 하락(recency는 이력 필요).
+- 재현: `python run_pipeline.py --k 50 --steps E --split TO_GLOBAL --seeds 2020,2021,2022 --specs ...`. 무료(k=50 산출물 재사용).
+- **졸업작품 약점 #2(cold-start 미검증) 해소.** 이제 스토리: IKGR은 (1) cold-start에서 CF를 압도(~20×), (2) sparse할수록 long-tail 우위↑(k-스윕), (3) CORONA는 diversity-aware 트레이드오프. 정직하고 강한 3단 서사.
