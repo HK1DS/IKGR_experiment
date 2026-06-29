@@ -113,6 +113,9 @@ def main():
     ap.add_argument("--dataset", default="ikgr-custom")
     ap.add_argument("--no-seed-cache", action="store_true",
                     help="do not reuse base run/ LLM caches for this k")
+    ap.add_argument("--seed-cache-from", default="run/",
+                    help="dir to seed LLM caches from (use run_k50/ for k=30 so "
+                         "the ~40k already-extracted profiles are reused, not re-paid)")
     # eval (stage E) knobs
     ap.add_argument("--split", default="TO")
     ap.add_argument("--epochs", default="12")
@@ -147,7 +150,7 @@ def main():
 
     # seed LLM caches before B/C to save cost
     if ("B" in steps or "C" in steps) and not args.no_seed_cache:
-        seed_caches(run_dir)
+        seed_caches(run_dir, args.seed_cache_from)
 
     # B) step1 exact intents (LLM) ---------------------------------------------
     if "B" in steps:
