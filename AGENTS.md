@@ -395,19 +395,37 @@ overall NDCG@10 (글로벌 split): **IKGR 0.120 > LightGCN 0.097 > BPR 0.090 ≈
 
 
 ---
-## ⏳ 진행 중 (세션 인수인계용) — k=30 스윕 실행 중
-**상태 (이 줄 작성 시점):** k=30 파이프라인 실행 중. step1 ✅ / step2 ✅ / D(빌드) ✅ 완료. **TO 평가 진행 중**(IKGR_kgoff 3seed 완료, 나머지 5 spec 대기), 이어서 **TO_GLOBAL 평가** 자동 실행 예정. LLM 비용은 이미 지출 완료(~$13~16, k=30 신규 26,168 호출, run_k50 캐시 재사용).
+## ⏳ 진행 중 (세션 인수인계용) — k=30 스윕은 평가 중간에서 정지
+**현재 실제 상태:** k=30 파이프라인의 비싼/긴 앞단은 완료됨. step1 ✅ / step2 ✅ / D(embedding bank + intent/meta KG + RecBole 변환 + timestamp) ✅ 완료. **현재 실행 중인 python 프로세스는 없고, 평가 중간에서 정지한 상태.** LLM 비용은 이미 지출 완료(~$13~16, k=30 신규 26,168 호출, run_k50 캐시 재사용)라서 처음부터 다시 할 필요 없음.
 
 **데이터/규모:** k=30 = 62,142 users / 27,975 items / 6,237,437 interactions. meta-KG/intent-KG/banks 빌드 완료(`run_k30/`).
+
+**완료된 k=30 TO 평가 (`run_k30/slice_eval_TO_result.json`, 3seed mean):**
+| 모델 | NDCG@10 | tail@10 | tail@30 | cov@10 |
+|---|---:|---:|---:|---:|
+| MF / IKGR_kgoff | 0.0795 | 0.0105 | 0.0218 | 0.3647 |
+| IKGR_full_hetero | 0.0771 | 0.0139 | 0.0280 | 0.5008 |
+| IKGR+DynLLM (`IKGR_dyn`) | 0.0822 | 0.0170 | 0.0325 | 0.5164 |
+| CORONA cand_db | 0.0127 | 0.0273 | 0.0454 | 0.4581 |
+
+**아직 남은 k=30 평가:**
+- TO split: `BPR`, `LightGCN` 3seed가 아직 없음.
+- TO_GLOBAL split: `run_k30/slice_eval_TO_GLOBAL_result.json` 자체가 아직 없음. cold-start 표를 만들려면 이 평가가 필요.
+
+**시간 추정(동일 Windows + RTX 3060 Ti 기준):**
+- 완료된 k=30 TO 실측: seed당 `IKGR_kgoff` ~8.1분, `IKGR_full_hetero` ~23.1분, `IKGR_dyn`/`IKGR_cand_db` 각각 ~25.8분.
+- 남은 TO baseline(`BPR`, `LightGCN`)은 대략 **1시간 안팎** 예상.
+- TO_GLOBAL 기본 6 spec(`IKGR_kgoff,IKGR_full_hetero,IKGR_dyn,IKGR_cand_db,BPR,LightGCN`) 3seed는 대략 **3~5시간** 예상.
+- 따라서 기본 재개 명령으로 끝까지 채우면 총 **약 4~6시간** 정도로 보는 게 안전. GPU 상태/RecBole 캐시/Windows CUDA 상태에 따라 더 흔들릴 수 있음.
 
 **중단 시 재개 방법 (어느 IDE/세션에서든):**
 1. 디스크 상태 확인: `run_k30/slice_eval_TO_result.json`, `run_k30/slice_eval_TO_GLOBAL_result.json`에 어떤 (spec, seed)가 들어있는지 확인(완료분).
 2. 재개 명령 (skip 로직이 완료분 건너뜀, 캐시 재사용):
    ```
-   python run_pipeline.py --k 30 --steps BCDE --seed-cache-from run_k50/ --split TO
-   python run_pipeline.py --k 30 --steps E --split TO_GLOBAL --seed-cache-from run_k50/
+   .venv\Scripts\python.exe run_pipeline.py --k 30 --steps E --seed-cache-from run_k50/ --split TO
+   .venv\Scripts\python.exe run_pipeline.py --k 30 --steps E --seed-cache-from run_k50/ --split TO_GLOBAL
    ```
-   (step1/2/D 이미 완료면 BCDE는 빌드까지 빠르게 통과 후 평가만 수행. 평가만 원하면 `--steps E`.)
+   (`--steps E`만으로 충분. step1/2/D 산출물은 이미 `run_k30/`와 `data/kc_k30/`에 있음.)
 3. ⚠️ Windows: `.venv\Scripts\python.exe` 사용, 떠있는 ghost python 없는 깨끗한 GPU 상태에서 시작(이전에 stale CUDA 상태로 eval이 hang한 적 있음 — 의심되면 python 프로세스 정리 후 재시작).
 4. 평가 끝나면 할 일: k=50과 동일 형식으로 (a) sparsity 표(tail@10 vs MF: k=100/k=50/**k=30**), (b) cold-start 표(cold0 Recall@10/NDCG@10) 계산 → `AGENTS.md` + 리포트에 k=30 행 추가 → `run_k30/*_result.json` 커밋.
 
