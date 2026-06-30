@@ -392,3 +392,23 @@ overall NDCG@10 (글로벌 split): **IKGR 0.120 > LightGCN 0.097 > BPR 0.090 ≈
 - CORONA cand_db: cold0 약함(0.0083) — diversity/long-tail 도구지 cold-start 도구 아님(예상대로). IKGR+Dyn: cold0서 IKGR보다 미세 하락(recency는 이력 필요).
 - 재현: `python run_pipeline.py --k 50 --steps E --split TO_GLOBAL --seeds 2020,2021,2022 --specs ...`. 무료(k=50 산출물 재사용).
 - **졸업작품 약점 #2(cold-start 미검증) 해소.** 이제 스토리: IKGR은 (1) cold-start에서 CF를 압도(~20×), (2) sparse할수록 long-tail 우위↑(k-스윕), (3) CORONA는 diversity-aware 트레이드오프. 정직하고 강한 3단 서사.
+
+
+---
+## ⏳ 진행 중 (세션 인수인계용) — k=30 스윕 실행 중
+**상태 (이 줄 작성 시점):** k=30 파이프라인 실행 중. step1 ✅ / step2 ✅ / D(빌드) ✅ 완료. **TO 평가 진행 중**(IKGR_kgoff 3seed 완료, 나머지 5 spec 대기), 이어서 **TO_GLOBAL 평가** 자동 실행 예정. LLM 비용은 이미 지출 완료(~$13~16, k=30 신규 26,168 호출, run_k50 캐시 재사용).
+
+**데이터/규모:** k=30 = 62,142 users / 27,975 items / 6,237,437 interactions. meta-KG/intent-KG/banks 빌드 완료(`run_k30/`).
+
+**중단 시 재개 방법 (어느 IDE/세션에서든):**
+1. 디스크 상태 확인: `run_k30/slice_eval_TO_result.json`, `run_k30/slice_eval_TO_GLOBAL_result.json`에 어떤 (spec, seed)가 들어있는지 확인(완료분).
+2. 재개 명령 (skip 로직이 완료분 건너뜀, 캐시 재사용):
+   ```
+   python run_pipeline.py --k 30 --steps BCDE --seed-cache-from run_k50/ --split TO
+   python run_pipeline.py --k 30 --steps E --split TO_GLOBAL --seed-cache-from run_k50/
+   ```
+   (step1/2/D 이미 완료면 BCDE는 빌드까지 빠르게 통과 후 평가만 수행. 평가만 원하면 `--steps E`.)
+3. ⚠️ Windows: `.venv\Scripts\python.exe` 사용, 떠있는 ghost python 없는 깨끗한 GPU 상태에서 시작(이전에 stale CUDA 상태로 eval이 hang한 적 있음 — 의심되면 python 프로세스 정리 후 재시작).
+4. 평가 끝나면 할 일: k=50과 동일 형식으로 (a) sparsity 표(tail@10 vs MF: k=100/k=50/**k=30**), (b) cold-start 표(cold0 Recall@10/NDCG@10) 계산 → `AGENTS.md` + 리포트에 k=30 행 추가 → `run_k30/*_result.json` 커밋.
+
+**이식성:** 이 레포는 순수 Python+git+디스크 파일이라 IDE 비종속. 새 에이전트는 이 AGENTS.md 전체를 읽고 위 절차로 이어가면 됨. (재현성: meta-KG/timestamp/split은 LLM 무관 결정적; intent만 저장된 LLM 출력 캐시에 의존, 캐시는 `run_k30/`에 보존.)
