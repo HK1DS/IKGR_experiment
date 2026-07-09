@@ -395,38 +395,46 @@ overall NDCG@10 (글로벌 split): **IKGR 0.120 > LightGCN 0.097 > BPR 0.090 ≈
 
 
 ---
-## ⏳ 진행 중 (세션 인수인계용) — k=30 스윕은 평가 중간에서 정지
-**현재 실제 상태:** k=30 파이프라인의 비싼/긴 앞단은 완료됨. step1 ✅ / step2 ✅ / D(embedding bank + intent/meta KG + RecBole 변환 + timestamp) ✅ 완료. **현재 실행 중인 python 프로세스는 없고, 평가 중간에서 정지한 상태.** LLM 비용은 이미 지출 완료(~$13~16, k=30 신규 26,168 호출, run_k50 캐시 재사용)라서 처음부터 다시 할 필요 없음.
+## ✅ k=30 스윕 완료 — sparse/long-tail + cold-start 주장 강화
+**현재 실제 상태:** k=30 파이프라인 완료. step1 ✅ / step2 ✅ / D(embedding bank + intent/meta KG + RecBole 변환 + timestamp) ✅ / TO 평가 ✅ / TO_GLOBAL 평가 ✅. LLM 비용은 이미 지출 완료(~$13~16, k=30 신규 26,168 호출, run_k50 캐시 재사용). 결과 파일: `run_k30/slice_eval_TO_result.json`, `run_k30/slice_eval_TO_GLOBAL_result.json`.
 
 **데이터/규모:** k=30 = 62,142 users / 27,975 items / 6,237,437 interactions. meta-KG/intent-KG/banks 빌드 완료(`run_k30/`).
 
-**완료된 k=30 TO 평가 (`run_k30/slice_eval_TO_result.json`, 3seed mean):**
+**k=30 TO 평가 (`run_k30/slice_eval_TO_result.json`, 3seed mean):**
 | 모델 | NDCG@10 | tail@10 | tail@30 | cov@10 |
 |---|---:|---:|---:|---:|
 | MF / IKGR_kgoff | 0.0795 | 0.0105 | 0.0218 | 0.3647 |
 | IKGR_full_hetero | 0.0771 | 0.0139 | 0.0280 | 0.5008 |
 | IKGR+DynLLM (`IKGR_dyn`) | 0.0822 | 0.0170 | 0.0325 | 0.5164 |
 | CORONA cand_db | 0.0127 | 0.0273 | 0.0454 | 0.4581 |
+| BPR | 0.0814 | 0.0110 | 0.0221 | 0.3641 |
+| LightGCN | 0.0820 | 0.0047 | 0.0101 | 0.1757 |
 
-**아직 남은 k=30 평가:**
-- TO split: `BPR`, `LightGCN` 3seed가 아직 없음.
-- TO_GLOBAL split: `run_k30/slice_eval_TO_GLOBAL_result.json` 자체가 아직 없음. cold-start 표를 만들려면 이 평가가 필요.
+**k=30 TO_GLOBAL 평가 (`run_k30/slice_eval_TO_GLOBAL_result.json`, 3seed mean):**
+| 모델 | overall NDCG@10 | tail@10 | tail@30 | cov@10 | cold0 R@10 | cold0 NDCG@10 | cold0 R@30 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MF / IKGR_kgoff | 0.0862 | 0.0021 | 0.0045 | 0.5412 | 0.0022 | 0.0140 | 0.0056 |
+| IKGR_full_hetero | **0.1209** | 0.0036 | 0.0074 | 0.3300 | **0.0677** | **0.3867** | **0.1443** |
+| IKGR+DynLLM (`IKGR_dyn`) | 0.1145 | 0.0036 | 0.0081 | 0.3180 | 0.0638 | 0.3704 | 0.1375 |
+| CORONA cand_db | 0.0232 | **0.0148** | **0.0343** | 0.4855 | 0.0093 | 0.0669 | 0.0138 |
+| BPR | 0.0885 | 0.0017 | 0.0037 | 0.4863 | 0.0029 | 0.0171 | 0.0073 |
+| LightGCN | 0.0932 | 0.0009 | 0.0019 | 0.2285 | 0.0078 | 0.0475 | 0.0173 |
 
-**시간 추정(동일 Windows + RTX 3060 Ti 기준):**
-- 완료된 k=30 TO 실측: seed당 `IKGR_kgoff` ~8.1분, `IKGR_full_hetero` ~23.1분, `IKGR_dyn`/`IKGR_cand_db` 각각 ~25.8분.
-- 남은 TO baseline(`BPR`, `LightGCN`)은 대략 **1시간 안팎** 예상.
-- TO_GLOBAL 기본 6 spec(`IKGR_kgoff,IKGR_full_hetero,IKGR_dyn,IKGR_cand_db,BPR,LightGCN`) 3seed는 대략 **3~5시간** 예상.
-- 따라서 기본 재개 명령으로 끝까지 채우면 총 **약 4~6시간** 정도로 보는 게 안전. GPU 상태/RecBole 캐시/Windows CUDA 상태에 따라 더 흔들릴 수 있음.
+**핵심 해석:**
+- k=30 TO에서 sparse해질수록 통합 모델 우위가 더 커짐. tail@10 기준 MF 대비 IKGR +32%, IKGR+DynLLM +62%, CORONA cand_db +160%.
+- k=30 TO_GLOBAL은 cold-start 주장을 더 강하게 만듦. pure cold 유저(train 0개)가 2,736명으로 늘었고, IKGR_full_hetero cold0 R@10은 0.0677로 MF(0.0022) 대비 약 31배, BPR(0.0029) 대비 약 23배, LightGCN(0.0078) 대비 약 8.7배.
+- TO_GLOBAL overall도 IKGR_full_hetero가 0.1209로 1위. DynLLM(recency)은 cold0에서는 약간 손해지만 전체적으로 여전히 강함. CORONA cand_db는 cold-start보다 diversity/long-tail 도구라는 기존 해석 유지.
+- CORONA cand_db는 TO_GLOBAL tail@10 0.0148로 압도적 1위(MF 대비 약 7배, LightGCN 대비 약 16배). 대신 overall NDCG는 크게 포기하는 diversity-first 트레이드오프.
 
-**중단 시 재개 방법 (어느 IDE/세션에서든):**
-1. 디스크 상태 확인: `run_k30/slice_eval_TO_result.json`, `run_k30/slice_eval_TO_GLOBAL_result.json`에 어떤 (spec, seed)가 들어있는지 확인(완료분).
-2. 재개 명령 (skip 로직이 완료분 건너뜀, 캐시 재사용):
+**재현/재실행 방법 (어느 IDE/세션에서든):**
+1. 디스크 상태 확인: `run_k30/slice_eval_TO_result.json`, `run_k30/slice_eval_TO_GLOBAL_result.json`에 6개 spec × 3seed가 모두 들어있는지 확인.
+2. 필요시 재실행 명령(skip 로직이 완료분 건너뜀, 캐시 재사용):
    ```
    .venv\Scripts\python.exe run_pipeline.py --k 30 --steps E --seed-cache-from run_k50/ --split TO
    .venv\Scripts\python.exe run_pipeline.py --k 30 --steps E --seed-cache-from run_k50/ --split TO_GLOBAL
    ```
    (`--steps E`만으로 충분. step1/2/D 산출물은 이미 `run_k30/`와 `data/kc_k30/`에 있음.)
 3. ⚠️ Windows: `.venv\Scripts\python.exe` 사용, 떠있는 ghost python 없는 깨끗한 GPU 상태에서 시작(이전에 stale CUDA 상태로 eval이 hang한 적 있음 — 의심되면 python 프로세스 정리 후 재시작).
-4. 평가 끝나면 할 일: k=50과 동일 형식으로 (a) sparsity 표(tail@10 vs MF: k=100/k=50/**k=30**), (b) cold-start 표(cold0 Recall@10/NDCG@10) 계산 → `AGENTS.md` + 리포트에 k=30 행 추가 → `run_k30/*_result.json` 커밋.
+4. 남은 문서 작업: k=100/k=50/k=30 비교표를 별도 리포트에 정리하고 `run_k30/*_result.json` 커밋.
 
 **이식성:** 이 레포는 순수 Python+git+디스크 파일이라 IDE 비종속. 새 에이전트는 이 AGENTS.md 전체를 읽고 위 절차로 이어가면 됨. (재현성: meta-KG/timestamp/split은 LLM 무관 결정적; intent만 저장된 LLM 출력 캐시에 의존, 캐시는 `run_k30/`에 보존.)
