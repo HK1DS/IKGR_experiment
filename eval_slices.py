@@ -98,14 +98,15 @@ def _build_recency(model, train_data, config):
 def _train_and_collect(model_arg, extra, rb, paths, seed):
     os.makedirs("run/recbole_slice", exist_ok=True)
     extra = dict(extra)
-    # CORONA stage-3 (3-1): candidate-set restriction at eval (top-M graph
-    # neighbors). corona_cand=M enables it; it is an eval-only knob, not a model
-    # param, so pop it before building the RecBole config.
+    # CORONA stage-3 (3-1): candidate-set restriction and soft reranking are
+    # eval-only knobs, not model parameters, so pop them before building the
+    # RecBole config. A rerank grid shares one trained model across lambdas.
     cand_m = int(extra.pop("corona_cand", 0))
     cand_cf = bool(extra.pop("corona_cf", True))
     cand_idf = bool(extra.pop("corona_idf", False))
     cand_popnorm = float(extra.pop("corona_popnorm", 0.0))
     cand_weights = extra.pop("corona_weights", None)
+    rerank_lambdas = [float(x) for x in extra.pop("corona_rerank_grid", [])]
     config = Config(model=model_arg, dataset=rb["dataset"], config_dict=_config(rb, paths, extra, seed))
     dataset = create_dataset(config)
     train_data, valid_data, test_data = data_preparation(config, dataset)
@@ -114,14 +115,15 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
     if getattr(model, "use_dynamic", False):
         _build_recency(model, train_data, config)
     retriever = None
-    if cand_m > 0:
+    if cand_m > 0 or rerank_lambdas:
         from ikgr_core.corona_retriever import CoronaRetriever
         retriever = CoronaRetriever(train_data, config,
                                     kg_pack_path=extra.get("kg_pack_path"),
                                     meta_kg_path=extra.get("meta_kg_path"),
                                     weights=cand_weights, use_cf=cand_cf,
                                     idf=cand_idf, pop_norm=cand_popnorm)
-        print(f"  [corona] candidate retriever ready (M={cand_m}, cf={cand_cf}, "
+        mode = f"M={cand_m}" if cand_m > 0 else f"soft_rerank={rerank_lambdas}"
+        print(f"  [corona] retriever ready ({mode}, cf={cand_cf}, "
               f"idf={cand_idf}, pop_norm={cand_popnorm})", flush=True)
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
     t0 = time.time()
@@ -143,7 +145,10 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
     if hasattr(model, "eval_cache_items"):
         model.eval_cache_items()
     item_pop = np.zeros(n_items, dtype=np.int64)
-    per_user = []
+    # None is the ordinary evaluation path. Each lambda receives its own
+    # per-user rankings while sharing this exact trained model and test pass.
+    variants = [None] if not rerank_lambdas else rerank_lambdas
+    per_user = {lam: [] for lam in variants}
     cand_rec_sum, cand_size_sum, cand_n = 0.0, 0, 0
     with torch.no_grad():
         for interaction, history_index, positive_u, positive_i in test_data:
@@ -169,21 +174,26 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
                 scores[history_index] = -np.inf
             else:
                 ucnt = np.zeros(B, dtype=np.int64)
-            topk = torch.topk(scores, MAXK, dim=-1)[1].cpu().numpy()
+            graph_prior = None
+            if rerank_lambdas:
+                graph_prior = torch.from_numpy(retriever.normalized_prior(users_np)).to(dev)
             pu = positive_u.cpu().numpy(); pi = positive_i.cpu().numpy()
             rel_by_row = {}
             for r, it in zip(pu, pi):
                 rel_by_row.setdefault(int(r), []).append(int(it))
-            for row in range(B):
-                rel = rel_by_row.get(row)
-                if not rel:
-                    continue
-                if cand_sets is not None:
-                    cs = cand_sets[row]
-                    cand_rec_sum += sum(1 for it in rel if it in cs) / len(rel)
-                    cand_size_sum += len(cs); cand_n += 1
-                per_user.append({"uid": int(users_np[row]), "activity": int(ucnt[row]),
-                                 "topk": topk[row].tolist(), "rel": rel})
+            for lam in variants:
+                rank_scores = scores if lam is None else scores + lam * graph_prior
+                topk = torch.topk(rank_scores, MAXK, dim=-1)[1].cpu().numpy()
+                for row in range(B):
+                    rel = rel_by_row.get(row)
+                    if not rel:
+                        continue
+                    if cand_sets is not None:
+                        cs = cand_sets[row]
+                        cand_rec_sum += sum(1 for it in rel if it in cs) / len(rel)
+                        cand_size_sum += len(cs); cand_n += 1
+                    per_user[lam].append({"uid": int(users_np[row]), "activity": int(ucnt[row]),
+                                          "topk": topk[row].tolist(), "rel": rel})
     cand_stats = {}
     if retriever is not None and cand_n:
         cand_stats = {"cand_recall": round(cand_rec_sum / cand_n, 4),
@@ -336,6 +346,13 @@ def main():
                                      "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
                                      "use_dynamic": True, "corona_cand": 500,
                                      "corona_cf": False, "corona_idf": True, "corona_popnorm": 0.5}),
+        # Soft CORONA reranking: preserve full-sort recall, then add a bounded
+        # de-biased graph prior. All lambdas below are evaluated after ONE
+        # training run per seed, so the sweep has no extra GPU training cost.
+        "IKGR_rerank_db": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
+                                       "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
+                                       "use_dynamic": True, "corona_rerank_grid": [0.02, 0.05, 0.1],
+                                       "corona_cf": False, "corona_idf": True, "corona_popnorm": 0.5}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }
@@ -351,24 +368,28 @@ def main():
 
     for name in spec_names:
         model_arg, extra = all_specs[name]
-        results.setdefault(name, {})
-        if "seeds" not in results[name]:
-            results[name]["seeds"] = {}
+        rerank_lambdas = [float(x) for x in extra.get("corona_rerank_grid", [])]
+        result_names = ([f"{name}_l{str(lam).replace('.', 'p')}" for lam in rerank_lambdas]
+                        if rerank_lambdas else [name])
+        for result_name in result_names:
+            results.setdefault(result_name, {})
+            results[result_name].setdefault("seeds", {})
         for seed in seeds:
-            if str(seed) in results[name]["seeds"]:
+            if all(str(seed) in results[result_name]["seeds"] for result_name in result_names):
                 print(f"[skip] {name} seed={seed}", flush=True); continue
             print(f"\n===== {name} seed={seed} =====", flush=True)
-            pu, pop, tsec, ni, cstats = _train_and_collect(model_arg, extra, rb, paths, seed)
-            rep = slice_report(pu, pop, ni); rep["train_sec"] = tsec
-            if cstats:
-                rep.update(cstats)
-            results[name]["seeds"][str(seed)] = rep
-            results[name]["agg"] = _aggregate(results[name]["seeds"])
+            pu_by_variant, pop, tsec, ni, cstats = _train_and_collect(model_arg, extra, rb, paths, seed)
+            for lam, result_name in zip(([None] if not rerank_lambdas else rerank_lambdas), result_names):
+                rep = slice_report(pu_by_variant[lam], pop, ni); rep["train_sec"] = tsec
+                if cstats:
+                    rep.update(cstats)
+                results[result_name]["seeds"][str(seed)] = rep
+                results[result_name]["agg"] = _aggregate(results[result_name]["seeds"])
+                print(f"[{result_name} s{seed}] overall_ndcg@10={rep['overall']['ndcg@10']} "
+                      f"tail_recall@10={rep['long_tail']['recall@10']} cov@10={rep['coverage@10']} "
+                      f"({tsec}s)", flush=True)
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
-            print(f"[{name} s{seed}] overall_ndcg@10={rep['overall']['ndcg@10']} "
-                  f"tail_recall@10={rep['long_tail']['recall@10']} cov@10={rep['coverage@10']} "
-                  f"{('cand_rec='+str(rep.get('cand_recall'))+' ') if cstats else ''}({tsec}s)", flush=True)
     print("\nALL DONE")
 
 

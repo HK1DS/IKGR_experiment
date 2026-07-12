@@ -134,6 +134,20 @@ class CoronaRetriever:
             score = score / np.power(self.item_pop + 1.0, self.pop_norm)[None, :]
         return score
 
+    def normalized_prior(self, user_ids):
+        """Return a bounded graph-retrieval prior in [0, 1] for reranking.
+
+        Candidate restriction uses only the top-M set, which can discard a
+        relevant item before the neural ranker sees it.  The soft reranker keeps
+        the full catalog and uses this normalized graph score as a small prior.
+        Log compression prevents a few high-degree metadata nodes from making
+        the prior dominate a user's ranking.
+        """
+        score = self._scores(user_ids)
+        score = np.log1p(np.maximum(score, 0.0))
+        denom = score.max(axis=1, keepdims=True)
+        return np.divide(score, denom, out=np.zeros_like(score), where=denom > 0)
+
     def candidates(self, user_ids, M, chunk=256):
         """Return top-M candidate item ids per user as int64 array [len(users), M].
         Processed in chunks to bound memory."""
