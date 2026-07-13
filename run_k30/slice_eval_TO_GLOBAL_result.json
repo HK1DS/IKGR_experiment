@@ -1897,5 +1897,797 @@
         ]
       }
     }
+  },
+  "IKGR_rerank_db_rel_l0p0": {
+    "run_signature": "fb9fc541f454307a",
+    "run_context": {
+      "schema": 2,
+      "spec": "IKGR_rerank_db_rel",
+      "model": "IKGR",
+      "split": "TO_GLOBAL",
+      "epochs": 12,
+      "extra": {
+        "use_kg": true,
+        "kg_pack_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\kg_pack.pt",
+        "kg_layers": 1,
+        "kg_cap": 32,
+        "intent_learnable": false,
+        "use_meta_kg": true,
+        "meta_kg_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\meta_kg_pack.pt",
+        "use_dynamic": true,
+        "corona_rerank_grid": [
+          0.0,
+          0.1,
+          0.25,
+          0.5
+        ],
+        "corona_cf": false,
+        "corona_idf": true,
+        "corona_popnorm": 0.5
+      },
+      "paths": {
+        "input_csv": "data/kc_k30/profiles_k30.csv",
+        "workdir": "run_k30/",
+        "step1_output": "run_k30/step1_intents.csv",
+        "step2_output": "run_k30/step2_related_intents.csv",
+        "kg_triples": "run_k30/kg_triples.txt",
+        "inter_file": "data/kc_k30/interactions_k30.csv",
+        "recbole_dump": "run_k30/recbole/",
+        "user_bank_pt": "run_k30/user_bank.pt",
+        "item_bank_pt": "run_k30/item_bank.pt",
+        "kg_pack": "run_k30/kg_pack.pt",
+        "meta_kg_pack": "run_k30/meta_kg_pack.pt"
+      },
+      "recbole": {
+        "model": "IKGR",
+        "dataset": "ikgr-custom",
+        "topk": [
+          10,
+          30
+        ],
+        "metrics": [
+          "Recall",
+          "MRR",
+          "NDCG",
+          "Hit",
+          "Precision"
+        ],
+        "epochs": 20,
+        "lambda_mix": 0.1,
+        "embedding_size": 512,
+        "gcn_layers": 1,
+        "dropout": 0.1
+      },
+      "code": {
+        "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\eval_slices.py": "1a4c415086d97f462484bd8f4b7369f036d2982e9a67487da7b68cb7c227ab9d",
+        "ikgr_core/model_ikgr.py": "c2b830f566c476e6890a3193c045ec98f56da6cc7f464d2ab830a6e0f6f79b46",
+        "ikgr_core/corona_retriever.py": "c40652318a9744d8595a41c9ada2f43397f0eb90cc40043bfa2aa8bd99279f62"
+      }
+    },
+    "seeds": {
+      "2020": {
+        "overall": {
+          "recall@10": 0.0592,
+          "ndcg@10": 0.1117,
+          "hit@10": 0.3728,
+          "recall@30": 0.1167,
+          "ndcg@30": 0.1122,
+          "hit@30": 0.5178
+        },
+        "n_test_users": 38816,
+        "long_tail": {
+          "head_cut_pop": 111.0,
+          "n_tail_items": 22705,
+          "n_users_with_tail_rel": 29645,
+          "recall@10": 0.0046,
+          "ndcg@10": 0.0047,
+          "hit@10": 0.0176,
+          "recall@30": 0.0091,
+          "ndcg@30": 0.0061,
+          "hit@30": 0.033
+        },
+        "cold_start_buckets": {
+          "Q1_cold": {
+            "n_users": 7928,
+            "ndcg@10": 0.2545,
+            "recall@10": 0.0592
+          },
+          "Q2": {
+            "n_users": 7777,
+            "ndcg@10": 0.0936,
+            "recall@10": 0.0838
+          },
+          "Q3": {
+            "n_users": 7603,
+            "ndcg@10": 0.0806,
+            "recall@10": 0.0754
+          },
+          "Q4": {
+            "n_users": 7784,
+            "ndcg@10": 0.0678,
+            "recall@10": 0.053
+          },
+          "Q5_warm": {
+            "n_users": 7724,
+            "ndcg@10": 0.0581,
+            "recall@10": 0.0249
+          }
+        },
+        "cold_abs_buckets": {
+          "cold0_train": {
+            "n_users": 2736,
+            "ndcg@10": 0.3698,
+            "recall@10": 0.0643,
+            "recall@30": 0.1393
+          },
+          "cold_1_5": {
+            "n_users": 1230,
+            "ndcg@10": 0.2646,
+            "recall@10": 0.053,
+            "recall@30": 0.1148
+          },
+          "cold_6_20": {
+            "n_users": 3085,
+            "ndcg@10": 0.1829,
+            "recall@10": 0.0552,
+            "recall@30": 0.1211
+          },
+          "warm_gt20": {
+            "n_users": 31765,
+            "ndcg@10": 0.0766,
+            "recall@10": 0.0594,
+            "recall@30": 0.1144
+          }
+        },
+        "activity_q_20_40_60_80": [
+          23.0,
+          36.0,
+          55.0,
+          103.0
+        ],
+        "coverage@10": 0.4143,
+        "novelty_bits": 10.5608,
+        "avg_rec_popularity": 5944.9,
+        "train_sec": 1259.1
+      }
+    },
+    "agg": {
+      "overall.ndcg@10": {
+        "mean": 0.1117,
+        "std": 0.0,
+        "seeds": [
+          0.1117
+        ]
+      },
+      "overall.recall@10": {
+        "mean": 0.0592,
+        "std": 0.0,
+        "seeds": [
+          0.0592
+        ]
+      },
+      "long_tail.recall@10": {
+        "mean": 0.0046,
+        "std": 0.0,
+        "seeds": [
+          0.0046
+        ]
+      },
+      "long_tail.recall@30": {
+        "mean": 0.0091,
+        "std": 0.0,
+        "seeds": [
+          0.0091
+        ]
+      },
+      "coverage@10": {
+        "mean": 0.4143,
+        "std": 0.0,
+        "seeds": [
+          0.4143
+        ]
+      },
+      "novelty_bits": {
+        "mean": 10.5608,
+        "std": 0.0,
+        "seeds": [
+          10.5608
+        ]
+      }
+    }
+  },
+  "IKGR_rerank_db_rel_l0p1": {
+    "run_signature": "fb9fc541f454307a",
+    "run_context": {
+      "schema": 2,
+      "spec": "IKGR_rerank_db_rel",
+      "model": "IKGR",
+      "split": "TO_GLOBAL",
+      "epochs": 12,
+      "extra": {
+        "use_kg": true,
+        "kg_pack_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\kg_pack.pt",
+        "kg_layers": 1,
+        "kg_cap": 32,
+        "intent_learnable": false,
+        "use_meta_kg": true,
+        "meta_kg_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\meta_kg_pack.pt",
+        "use_dynamic": true,
+        "corona_rerank_grid": [
+          0.0,
+          0.1,
+          0.25,
+          0.5
+        ],
+        "corona_cf": false,
+        "corona_idf": true,
+        "corona_popnorm": 0.5
+      },
+      "paths": {
+        "input_csv": "data/kc_k30/profiles_k30.csv",
+        "workdir": "run_k30/",
+        "step1_output": "run_k30/step1_intents.csv",
+        "step2_output": "run_k30/step2_related_intents.csv",
+        "kg_triples": "run_k30/kg_triples.txt",
+        "inter_file": "data/kc_k30/interactions_k30.csv",
+        "recbole_dump": "run_k30/recbole/",
+        "user_bank_pt": "run_k30/user_bank.pt",
+        "item_bank_pt": "run_k30/item_bank.pt",
+        "kg_pack": "run_k30/kg_pack.pt",
+        "meta_kg_pack": "run_k30/meta_kg_pack.pt"
+      },
+      "recbole": {
+        "model": "IKGR",
+        "dataset": "ikgr-custom",
+        "topk": [
+          10,
+          30
+        ],
+        "metrics": [
+          "Recall",
+          "MRR",
+          "NDCG",
+          "Hit",
+          "Precision"
+        ],
+        "epochs": 20,
+        "lambda_mix": 0.1,
+        "embedding_size": 512,
+        "gcn_layers": 1,
+        "dropout": 0.1
+      },
+      "code": {
+        "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\eval_slices.py": "1a4c415086d97f462484bd8f4b7369f036d2982e9a67487da7b68cb7c227ab9d",
+        "ikgr_core/model_ikgr.py": "c2b830f566c476e6890a3193c045ec98f56da6cc7f464d2ab830a6e0f6f79b46",
+        "ikgr_core/corona_retriever.py": "c40652318a9744d8595a41c9ada2f43397f0eb90cc40043bfa2aa8bd99279f62"
+      }
+    },
+    "seeds": {
+      "2020": {
+        "overall": {
+          "recall@10": 0.0589,
+          "ndcg@10": 0.1111,
+          "hit@10": 0.371,
+          "recall@30": 0.1161,
+          "ndcg@30": 0.1116,
+          "hit@30": 0.5162
+        },
+        "n_test_users": 38816,
+        "long_tail": {
+          "head_cut_pop": 111.0,
+          "n_tail_items": 22705,
+          "n_users_with_tail_rel": 29645,
+          "recall@10": 0.0047,
+          "ndcg@10": 0.0048,
+          "hit@10": 0.0179,
+          "recall@30": 0.0093,
+          "ndcg@30": 0.0062,
+          "hit@30": 0.0339
+        },
+        "cold_start_buckets": {
+          "Q1_cold": {
+            "n_users": 7928,
+            "ndcg@10": 0.2539,
+            "recall@10": 0.059
+          },
+          "Q2": {
+            "n_users": 7777,
+            "ndcg@10": 0.0931,
+            "recall@10": 0.0834
+          },
+          "Q3": {
+            "n_users": 7603,
+            "ndcg@10": 0.0803,
+            "recall@10": 0.0754
+          },
+          "Q4": {
+            "n_users": 7784,
+            "ndcg@10": 0.067,
+            "recall@10": 0.0524
+          },
+          "Q5_warm": {
+            "n_users": 7724,
+            "ndcg@10": 0.0574,
+            "recall@10": 0.0246
+          }
+        },
+        "cold_abs_buckets": {
+          "cold0_train": {
+            "n_users": 2736,
+            "ndcg@10": 0.3698,
+            "recall@10": 0.0643,
+            "recall@30": 0.1393
+          },
+          "cold_1_5": {
+            "n_users": 1230,
+            "ndcg@10": 0.2641,
+            "recall@10": 0.053,
+            "recall@30": 0.1145
+          },
+          "cold_6_20": {
+            "n_users": 3085,
+            "ndcg@10": 0.1821,
+            "recall@10": 0.055,
+            "recall@30": 0.1205
+          },
+          "warm_gt20": {
+            "n_users": 31765,
+            "ndcg@10": 0.076,
+            "recall@10": 0.0591,
+            "recall@30": 0.1137
+          }
+        },
+        "activity_q_20_40_60_80": [
+          23.0,
+          36.0,
+          55.0,
+          103.0
+        ],
+        "coverage@10": 0.4206,
+        "novelty_bits": 10.6077,
+        "avg_rec_popularity": 5855.2,
+        "train_sec": 1259.1
+      }
+    },
+    "agg": {
+      "overall.ndcg@10": {
+        "mean": 0.1111,
+        "std": 0.0,
+        "seeds": [
+          0.1111
+        ]
+      },
+      "overall.recall@10": {
+        "mean": 0.0589,
+        "std": 0.0,
+        "seeds": [
+          0.0589
+        ]
+      },
+      "long_tail.recall@10": {
+        "mean": 0.0047,
+        "std": 0.0,
+        "seeds": [
+          0.0047
+        ]
+      },
+      "long_tail.recall@30": {
+        "mean": 0.0093,
+        "std": 0.0,
+        "seeds": [
+          0.0093
+        ]
+      },
+      "coverage@10": {
+        "mean": 0.4206,
+        "std": 0.0,
+        "seeds": [
+          0.4206
+        ]
+      },
+      "novelty_bits": {
+        "mean": 10.6077,
+        "std": 0.0,
+        "seeds": [
+          10.6077
+        ]
+      }
+    }
+  },
+  "IKGR_rerank_db_rel_l0p25": {
+    "run_signature": "fb9fc541f454307a",
+    "run_context": {
+      "schema": 2,
+      "spec": "IKGR_rerank_db_rel",
+      "model": "IKGR",
+      "split": "TO_GLOBAL",
+      "epochs": 12,
+      "extra": {
+        "use_kg": true,
+        "kg_pack_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\kg_pack.pt",
+        "kg_layers": 1,
+        "kg_cap": 32,
+        "intent_learnable": false,
+        "use_meta_kg": true,
+        "meta_kg_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\meta_kg_pack.pt",
+        "use_dynamic": true,
+        "corona_rerank_grid": [
+          0.0,
+          0.1,
+          0.25,
+          0.5
+        ],
+        "corona_cf": false,
+        "corona_idf": true,
+        "corona_popnorm": 0.5
+      },
+      "paths": {
+        "input_csv": "data/kc_k30/profiles_k30.csv",
+        "workdir": "run_k30/",
+        "step1_output": "run_k30/step1_intents.csv",
+        "step2_output": "run_k30/step2_related_intents.csv",
+        "kg_triples": "run_k30/kg_triples.txt",
+        "inter_file": "data/kc_k30/interactions_k30.csv",
+        "recbole_dump": "run_k30/recbole/",
+        "user_bank_pt": "run_k30/user_bank.pt",
+        "item_bank_pt": "run_k30/item_bank.pt",
+        "kg_pack": "run_k30/kg_pack.pt",
+        "meta_kg_pack": "run_k30/meta_kg_pack.pt"
+      },
+      "recbole": {
+        "model": "IKGR",
+        "dataset": "ikgr-custom",
+        "topk": [
+          10,
+          30
+        ],
+        "metrics": [
+          "Recall",
+          "MRR",
+          "NDCG",
+          "Hit",
+          "Precision"
+        ],
+        "epochs": 20,
+        "lambda_mix": 0.1,
+        "embedding_size": 512,
+        "gcn_layers": 1,
+        "dropout": 0.1
+      },
+      "code": {
+        "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\eval_slices.py": "1a4c415086d97f462484bd8f4b7369f036d2982e9a67487da7b68cb7c227ab9d",
+        "ikgr_core/model_ikgr.py": "c2b830f566c476e6890a3193c045ec98f56da6cc7f464d2ab830a6e0f6f79b46",
+        "ikgr_core/corona_retriever.py": "c40652318a9744d8595a41c9ada2f43397f0eb90cc40043bfa2aa8bd99279f62"
+      }
+    },
+    "seeds": {
+      "2020": {
+        "overall": {
+          "recall@10": 0.0582,
+          "ndcg@10": 0.1101,
+          "hit@10": 0.3681,
+          "recall@30": 0.1151,
+          "ndcg@30": 0.1107,
+          "hit@30": 0.5132
+        },
+        "n_test_users": 38816,
+        "long_tail": {
+          "head_cut_pop": 111.0,
+          "n_tail_items": 22705,
+          "n_users_with_tail_rel": 29645,
+          "recall@10": 0.0048,
+          "ndcg@10": 0.005,
+          "hit@10": 0.0188,
+          "recall@30": 0.0095,
+          "ndcg@30": 0.0064,
+          "hit@30": 0.0349
+        },
+        "cold_start_buckets": {
+          "Q1_cold": {
+            "n_users": 7928,
+            "ndcg@10": 0.253,
+            "recall@10": 0.0587
+          },
+          "Q2": {
+            "n_users": 7777,
+            "ndcg@10": 0.0921,
+            "recall@10": 0.083
+          },
+          "Q3": {
+            "n_users": 7603,
+            "ndcg@10": 0.0792,
+            "recall@10": 0.0737
+          },
+          "Q4": {
+            "n_users": 7784,
+            "ndcg@10": 0.0659,
+            "recall@10": 0.0514
+          },
+          "Q5_warm": {
+            "n_users": 7724,
+            "ndcg@10": 0.0565,
+            "recall@10": 0.0242
+          }
+        },
+        "cold_abs_buckets": {
+          "cold0_train": {
+            "n_users": 2736,
+            "ndcg@10": 0.3699,
+            "recall@10": 0.0643,
+            "recall@30": 0.1395
+          },
+          "cold_1_5": {
+            "n_users": 1230,
+            "ndcg@10": 0.2626,
+            "recall@10": 0.0525,
+            "recall@30": 0.1139
+          },
+          "cold_6_20": {
+            "n_users": 3085,
+            "ndcg@10": 0.1804,
+            "recall@10": 0.0544,
+            "recall@30": 0.1198
+          },
+          "warm_gt20": {
+            "n_users": 31765,
+            "ndcg@10": 0.075,
+            "recall@10": 0.0582,
+            "recall@30": 0.1126
+          }
+        },
+        "activity_q_20_40_60_80": [
+          23.0,
+          36.0,
+          55.0,
+          103.0
+        ],
+        "coverage@10": 0.4302,
+        "novelty_bits": 10.6784,
+        "avg_rec_popularity": 5723.3,
+        "train_sec": 1259.1
+      }
+    },
+    "agg": {
+      "overall.ndcg@10": {
+        "mean": 0.1101,
+        "std": 0.0,
+        "seeds": [
+          0.1101
+        ]
+      },
+      "overall.recall@10": {
+        "mean": 0.0582,
+        "std": 0.0,
+        "seeds": [
+          0.0582
+        ]
+      },
+      "long_tail.recall@10": {
+        "mean": 0.0048,
+        "std": 0.0,
+        "seeds": [
+          0.0048
+        ]
+      },
+      "long_tail.recall@30": {
+        "mean": 0.0095,
+        "std": 0.0,
+        "seeds": [
+          0.0095
+        ]
+      },
+      "coverage@10": {
+        "mean": 0.4302,
+        "std": 0.0,
+        "seeds": [
+          0.4302
+        ]
+      },
+      "novelty_bits": {
+        "mean": 10.6784,
+        "std": 0.0,
+        "seeds": [
+          10.6784
+        ]
+      }
+    }
+  },
+  "IKGR_rerank_db_rel_l0p5": {
+    "run_signature": "fb9fc541f454307a",
+    "run_context": {
+      "schema": 2,
+      "spec": "IKGR_rerank_db_rel",
+      "model": "IKGR",
+      "split": "TO_GLOBAL",
+      "epochs": 12,
+      "extra": {
+        "use_kg": true,
+        "kg_pack_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\kg_pack.pt",
+        "kg_layers": 1,
+        "kg_cap": 32,
+        "intent_learnable": false,
+        "use_meta_kg": true,
+        "meta_kg_path": "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\run_k30\\meta_kg_pack.pt",
+        "use_dynamic": true,
+        "corona_rerank_grid": [
+          0.0,
+          0.1,
+          0.25,
+          0.5
+        ],
+        "corona_cf": false,
+        "corona_idf": true,
+        "corona_popnorm": 0.5
+      },
+      "paths": {
+        "input_csv": "data/kc_k30/profiles_k30.csv",
+        "workdir": "run_k30/",
+        "step1_output": "run_k30/step1_intents.csv",
+        "step2_output": "run_k30/step2_related_intents.csv",
+        "kg_triples": "run_k30/kg_triples.txt",
+        "inter_file": "data/kc_k30/interactions_k30.csv",
+        "recbole_dump": "run_k30/recbole/",
+        "user_bank_pt": "run_k30/user_bank.pt",
+        "item_bank_pt": "run_k30/item_bank.pt",
+        "kg_pack": "run_k30/kg_pack.pt",
+        "meta_kg_pack": "run_k30/meta_kg_pack.pt"
+      },
+      "recbole": {
+        "model": "IKGR",
+        "dataset": "ikgr-custom",
+        "topk": [
+          10,
+          30
+        ],
+        "metrics": [
+          "Recall",
+          "MRR",
+          "NDCG",
+          "Hit",
+          "Precision"
+        ],
+        "epochs": 20,
+        "lambda_mix": 0.1,
+        "embedding_size": 512,
+        "gcn_layers": 1,
+        "dropout": 0.1
+      },
+      "code": {
+        "C:\\Users\\jwkim\\Downloads\\IKGR-main\\IKGR-main\\eval_slices.py": "1a4c415086d97f462484bd8f4b7369f036d2982e9a67487da7b68cb7c227ab9d",
+        "ikgr_core/model_ikgr.py": "c2b830f566c476e6890a3193c045ec98f56da6cc7f464d2ab830a6e0f6f79b46",
+        "ikgr_core/corona_retriever.py": "c40652318a9744d8595a41c9ada2f43397f0eb90cc40043bfa2aa8bd99279f62"
+      }
+    },
+    "seeds": {
+      "2020": {
+        "overall": {
+          "recall@10": 0.0572,
+          "ndcg@10": 0.1085,
+          "hit@10": 0.3641,
+          "recall@30": 0.1133,
+          "ndcg@30": 0.1089,
+          "hit@30": 0.5082
+        },
+        "n_test_users": 38816,
+        "long_tail": {
+          "head_cut_pop": 111.0,
+          "n_tail_items": 22705,
+          "n_users_with_tail_rel": 29645,
+          "recall@10": 0.0051,
+          "ndcg@10": 0.0053,
+          "hit@10": 0.02,
+          "recall@30": 0.0098,
+          "ndcg@30": 0.0067,
+          "hit@30": 0.0363
+        },
+        "cold_start_buckets": {
+          "Q1_cold": {
+            "n_users": 7928,
+            "ndcg@10": 0.2516,
+            "recall@10": 0.0583
+          },
+          "Q2": {
+            "n_users": 7777,
+            "ndcg@10": 0.0901,
+            "recall@10": 0.0815
+          },
+          "Q3": {
+            "n_users": 7603,
+            "ndcg@10": 0.0775,
+            "recall@10": 0.0725
+          },
+          "Q4": {
+            "n_users": 7784,
+            "ndcg@10": 0.0644,
+            "recall@10": 0.0504
+          },
+          "Q5_warm": {
+            "n_users": 7724,
+            "ndcg@10": 0.0551,
+            "recall@10": 0.0234
+          }
+        },
+        "cold_abs_buckets": {
+          "cold0_train": {
+            "n_users": 2736,
+            "ndcg@10": 0.3699,
+            "recall@10": 0.0644,
+            "recall@30": 0.1397
+          },
+          "cold_1_5": {
+            "n_users": 1230,
+            "ndcg@10": 0.2612,
+            "recall@10": 0.0523,
+            "recall@30": 0.1132
+          },
+          "cold_6_20": {
+            "n_users": 3085,
+            "ndcg@10": 0.1779,
+            "recall@10": 0.0538,
+            "recall@30": 0.118
+          },
+          "warm_gt20": {
+            "n_users": 31765,
+            "ndcg@10": 0.0733,
+            "recall@10": 0.0571,
+            "recall@30": 0.1106
+          }
+        },
+        "activity_q_20_40_60_80": [
+          23.0,
+          36.0,
+          55.0,
+          103.0
+        ],
+        "coverage@10": 0.4449,
+        "novelty_bits": 10.7981,
+        "avg_rec_popularity": 5506.6,
+        "train_sec": 1259.1
+      }
+    },
+    "agg": {
+      "overall.ndcg@10": {
+        "mean": 0.1085,
+        "std": 0.0,
+        "seeds": [
+          0.1085
+        ]
+      },
+      "overall.recall@10": {
+        "mean": 0.0572,
+        "std": 0.0,
+        "seeds": [
+          0.0572
+        ]
+      },
+      "long_tail.recall@10": {
+        "mean": 0.0051,
+        "std": 0.0,
+        "seeds": [
+          0.0051
+        ]
+      },
+      "long_tail.recall@30": {
+        "mean": 0.0098,
+        "std": 0.0,
+        "seeds": [
+          0.0098
+        ]
+      },
+      "coverage@10": {
+        "mean": 0.4449,
+        "std": 0.0,
+        "seeds": [
+          0.4449
+        ]
+      },
+      "novelty_bits": {
+        "mean": 10.7981,
+        "std": 0.0,
+        "seeds": [
+          10.7981
+        ]
+      }
+    }
   }
 }

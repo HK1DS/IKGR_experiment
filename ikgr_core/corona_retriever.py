@@ -146,12 +146,18 @@ class CoronaRetriever:
         score = self._scores(user_ids)
         score = np.log1p(np.maximum(score, 0.0))
         denom = score.max(axis=1, keepdims=True)
-        return np.divide(score, denom, out=np.zeros_like(score), where=denom > 0)
+        prior = np.divide(score, denom, out=np.zeros_like(score), where=denom > 0)
+        # A sparse product can occasionally surface a non-finite value on a
+        # degenerate user row. A NaN would poison even ``0 * prior`` in the
+        # lambda=0 control, so make the neutral prior explicit.
+        return np.nan_to_num(prior, nan=0.0, posinf=0.0, neginf=0.0)
 
     def candidates(self, user_ids, M, chunk=256):
         """Return top-M candidate item ids per user as int64 array [len(users), M].
         Processed in chunks to bound memory."""
         user_ids = np.asarray(user_ids, dtype=np.int64)
+        if M <= 0:
+            raise ValueError("M must be positive; use normalized_prior for soft reranking.")
         M = min(M, self.n_items)
         out = np.zeros((len(user_ids), M), dtype=np.int64)
         for s in range(0, len(user_ids), chunk):

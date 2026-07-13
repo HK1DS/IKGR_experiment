@@ -438,3 +438,21 @@ overall NDCG@10 (글로벌 split): **IKGR 0.120 > LightGCN 0.097 > BPR 0.090 ≈
 4. 남은 문서 작업: k=100/k=50/k=30 비교표를 별도 리포트에 정리하고 `run_k30/*_result.json` 커밋.
 
 **이식성:** 이 레포는 순수 Python+git+디스크 파일이라 IDE 비종속. 새 에이전트는 이 AGENTS.md 전체를 읽고 위 절차로 이어가면 됨. (재현성: meta-KG/timestamp/split은 LLM 무관 결정적; intent만 저장된 LLM 출력 캐시에 의존, 캐시는 `run_k30/`에 보존.)
+
+### ▶ 보류 — CORONA soft graph reranking (k=30, TO_GLOBAL)
+기존 `IKGR_cand_db`는 de-biased 후보만 남기는 hard candidate mask라 long-tail은 크게 개선했지만, 후보 recall 천장 때문에 overall NDCG가 크게 하락했다. 이를 보완하기 위해 **full-sort IKGR+DynLLM 점수는 유지하고**, de-biased CORONA graph retrieval 점수를 사용자별 `[0, 1]` prior로 정규화해 작은 가중치로 더하는 soft reranker를 구현했다.
+
+- 코드 커밋: `04fe80c` (`eval_slices.py`, `ikgr_core/corona_retriever.py`), GitHub `main` push 완료.
+- retriever 설정: CF off, metadata/intent IDF on, popularity normalization `item_pop^0.5`.
+- **실행 진단(중지됨, 원인 확정):** soft reranker는 `cand_m=0`인데도 candidate-mask 분기를 탔다. 빈 후보 mask가 모든 item score를 `-inf`로 만들었으므로 lambda 값과 무관하게 NDCG@10 0.0194/coverage 0.0004로 붕괴했다. 구 `IKGR_rerank_db_l*`/`IKGR_rerank_db_rel_l*` 결과는 무효다.
+- 수정: candidate masking은 `cand_m > 0`일 때만 적용하고, `CoronaRetriever.candidates(M<=0)`는 즉시 예외를 낸다. soft prior는 사용자별 full-sort score 표준편차에 비례해 더하며, `lambda=0`은 base score를 그대로 반환한다.
+- 재현성 보강: result JSON에 spec/config/code fingerprint를 저장한다. 코드·설정이 바뀌면 같은 spec/seed라도 자동 invalidation 후 재평가한다.
+- 검증 결과: seed 2020에서 `lambda=0`과 기존 `IKGR_dyn`이 일치하지 않아 자동 실행은 `blocked_baseline_mismatch`로 멈췄다. 이후 `verify_rerank_baseline.py`로 현재 코드의 `IKGR_dyn`를 canonical JSON을 건드리지 않고 2회 재실행했다.
+- 재실행 spec: `IKGR_rerank_db_rel`; lambda grid = `0.0`(IKGR+DynLLM 대조), `0.1`, `0.25`, `0.5`.
+- 효율: lambda 3개는 **seed당 모델을 한 번만 학습한 뒤 동일 평가 pass에서 함께 계산**하므로 GPU 학습이 3배가 되지 않는다.
+- 현재 실행 설정: `run_k30/config.k30.yaml`, `IKGR_SPLIT=TO_GLOBAL`, `IKGR_EPOCHS=12`, seeds `2020,2021,2022`.
+- 산출물: `run_k30/slice_eval_TO_GLOBAL_result.json`에 `IKGR_rerank_db_rel_l0p0`, `..._l0p1`, `..._l0p25`, `..._l0p5` seed 2020 validation 결과가 들어있다. `run_k30/rerank_repro_check.json`에는 재현성 검증 결과가 저장되어 있다.
+- 판정 기준: `IKGR_full_hetero`의 cold-start overall 강점을 훼손하지 않으면서, `IKGR_dyn` 대비 long-tail Recall/coverage를 개선하는 lambda가 있는지 확인하는 것이었으나, 아래 재현성 이슈 때문에 soft-rerank 성능 주장은 보류한다.
+- **자동 실행 예약:** `run_rerank_orchestrator.py`가 validation → primary grid → 필요 시 lower-lambda fallback을 순차 실행한다. 상태/로그/최종 판단은 `run_k30/rerank_orchestrator_status.json`, `run_k30/rerank_orchestrator.log`, `run_k30/rerank_orchestrator_summary.md`에 남긴다. baseline 재현 실패 시에는 임의 GPU 재시도를 하지 않고 `blocked_baseline_mismatch`로 멈춘다.
+- **재현성 검증 결론:** 기존 `IKGR_dyn` seed 2020(0.1151), rerank lambda=0(0.1117), 현재 코드에서 재실행한 `IKGR_dyn` 2회(0.1170 / 0.1177)가 모두 약간씩 달랐다. 결과 파일의 outcome은 `blocked_training_nondeterminism`. 즉 soft-rerank 자체가 반드시 틀렸다는 뜻은 아니지만, 현재 학습 경로가 같은 seed에서도 완전 결정적이지 않아 lambda별 미세 개선/악화를 논문 결과로 채택하기 어렵다.
+- **현재 권장:** Goodreads/k=30의 확정 결과는 기존 IKGR / DynLLM(recency) / CORONA `cand_db`까지로 사용한다. soft-rerank는 추가 연구 아이디어 또는 negative/blocked 실험으로만 기록한다. 더 진행하려면 deterministic 설정(CUDA/cuDNN, DataLoader worker, negative sampling, full-sort 평가 순서)을 먼저 고정한 뒤 `lambda=0 == IKGR_dyn` 대조군부터 재검증해야 한다. LLM/API 호출은 필요 없다.

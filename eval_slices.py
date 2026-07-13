@@ -15,7 +15,7 @@ Env overrides (for smoke tests):
   IKGR_EPOCHS=2              epochs override
   IKGR_SPECS=IKGR_kgon_L2,IKGR_kgoff   subset of specs
 """
-import os, json, time, math, yaml
+import os, json, time, math, yaml, hashlib
 import scipy.sparse as _sp
 if not hasattr(_sp.dok_matrix, "_update"):
     _sp.dok_matrix._update = dict.update
@@ -29,6 +29,42 @@ from ikgr_core.model_ikgr import IKGR as IKGRModel
 KS = [10, 30]
 MAXK = max(KS)
 COV_K = 10
+EVAL_SCHEMA_VERSION = 2
+
+
+def _experiment_context(name, model_arg, extra, rb, paths, split):
+    """Fingerprint evaluation inputs so stale seed results cannot be reused."""
+    source_paths = [__file__, "ikgr_core/model_ikgr.py", "ikgr_core/corona_retriever.py"]
+    code = {}
+    for path in source_paths:
+        try:
+            with open(path, "rb") as f:
+                code[path] = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            code[path] = None
+    context = {
+        "schema": EVAL_SCHEMA_VERSION,
+        "spec": name,
+        "model": model_arg if isinstance(model_arg, str) else model_arg.__name__,
+        "split": split,
+        "epochs": int(os.environ.get("IKGR_EPOCHS", rb["epochs"])),
+        "extra": extra,
+        "paths": paths,
+        "recbole": rb,
+        "code": code,
+    }
+    encoded = json.dumps(context, sort_keys=True, ensure_ascii=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16], context
+
+
+def _float_grid_from_env(name, default):
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    values = [float(value.strip()) for value in raw.split(",") if value.strip()]
+    if not values or any(value < 0 for value in values):
+        raise ValueError(f"{name} must contain one or more non-negative floats")
+    return values
 
 
 def _config(rb, paths, extra, seed):
@@ -95,6 +131,13 @@ def _build_recency(model, train_data, config):
     print(f"  [recency] built for {len(byu)} users from {len(u)} train inters (N={N})", flush=True)
 
 
+def _blend_rerank_scores(scores, graph_prior, score_scale, lam):
+    """Apply a relative graph prior without altering the zero-lambda control."""
+    if lam is None or lam == 0.0:
+        return scores
+    return scores + lam * score_scale * graph_prior
+
+
 def _train_and_collect(model_arg, extra, rb, paths, seed):
     os.makedirs("run/recbole_slice", exist_ok=True)
     extra = dict(extra)
@@ -159,7 +202,9 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
             scores[:, 0] = -np.inf
             users_np = users.cpu().numpy()
             cand_sets = None
-            if retriever is not None:
+            # Soft reranking keeps full-sort candidates. Only explicit
+            # candidate retrieval is allowed to mask scores.
+            if cand_m > 0:
                 cand = retriever.candidates(users_np, cand_m)      # [B, M]
                 cand_mask = torch.zeros((B, n_items), dtype=torch.bool, device=dev)
                 ct = torch.from_numpy(cand).to(dev)
@@ -175,14 +220,25 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
             else:
                 ucnt = np.zeros(B, dtype=np.int64)
             graph_prior = None
+            score_scale = None
             if rerank_lambdas:
                 graph_prior = torch.from_numpy(retriever.normalized_prior(users_np)).to(dev)
+                # Neural BPR scores have a model/seed-dependent scale.  An
+                # absolute [0, 1] graph bonus can therefore swamp the base
+                # ranker (or be inert).  Express lambda in each user's finite
+                # full-sort score standard deviations instead.
+                finite = torch.isfinite(scores)
+                n_finite = finite.sum(dim=1, keepdim=True).clamp_min(1)
+                safe_scores = scores.masked_fill(~finite, 0.0)
+                mean = safe_scores.sum(dim=1, keepdim=True) / n_finite
+                var = ((safe_scores - mean).square() * finite).sum(dim=1, keepdim=True) / n_finite
+                score_scale = var.sqrt().clamp_min(1e-6)
             pu = positive_u.cpu().numpy(); pi = positive_i.cpu().numpy()
             rel_by_row = {}
             for r, it in zip(pu, pi):
                 rel_by_row.setdefault(int(r), []).append(int(it))
             for lam in variants:
-                rank_scores = scores if lam is None else scores + lam * graph_prior
+                rank_scores = _blend_rerank_scores(scores, graph_prior, score_scale, lam)
                 topk = torch.topk(rank_scores, MAXK, dim=-1)[1].cpu().numpy()
                 for row in range(B):
                     rel = rel_by_row.get(row)
@@ -195,7 +251,7 @@ def _train_and_collect(model_arg, extra, rb, paths, seed):
                     per_user[lam].append({"uid": int(users_np[row]), "activity": int(ucnt[row]),
                                           "topk": topk[row].tolist(), "rel": rel})
     cand_stats = {}
-    if retriever is not None and cand_n:
+    if cand_m > 0 and cand_n:
         cand_stats = {"cand_recall": round(cand_rec_sum / cand_n, 4),
                       "cand_size": round(cand_size_sum / cand_n, 1), "cand_M": cand_m}
     return per_user, item_pop, train_sec, n_items, cand_stats
@@ -349,10 +405,12 @@ def main():
         # Soft CORONA reranking: preserve full-sort recall, then add a bounded
         # de-biased graph prior. All lambdas below are evaluated after ONE
         # training run per seed, so the sweep has no extra GPU training cost.
-        "IKGR_rerank_db": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
-                                       "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
-                                       "use_dynamic": True, "corona_rerank_grid": [0.02, 0.05, 0.1],
-                                       "corona_cf": False, "corona_idf": True, "corona_popnorm": 0.5}),
+        "IKGR_rerank_db_rel": (IKGRModel, {"use_kg": True, "kg_pack_path": kg, "kg_layers": 1, "kg_cap": 32,
+                                           "intent_learnable": False, "use_meta_kg": True, "meta_kg_path": meta,
+                                           "use_dynamic": True,
+                                           "corona_rerank_grid": _float_grid_from_env(
+                                               "IKGR_CORONA_RERANK_GRID", [0.0, 0.1, 0.25, 0.5]),
+                                           "corona_cf": False, "corona_idf": True, "corona_popnorm": 0.5}),
         "BPR":          ("BPR", {}),
         "LightGCN":     ("LightGCN", {}),
     }
@@ -368,12 +426,16 @@ def main():
 
     for name in spec_names:
         model_arg, extra = all_specs[name]
+        signature, context = _experiment_context(name, model_arg, extra, rb, paths, split)
         rerank_lambdas = [float(x) for x in extra.get("corona_rerank_grid", [])]
         result_names = ([f"{name}_l{str(lam).replace('.', 'p')}" for lam in rerank_lambdas]
                         if rerank_lambdas else [name])
         for result_name in result_names:
-            results.setdefault(result_name, {})
-            results[result_name].setdefault("seeds", {})
+            existing = results.get(result_name)
+            if not existing or existing.get("run_signature") != signature:
+                if existing:
+                    print(f"[invalidate] {result_name}: evaluation inputs changed", flush=True)
+                results[result_name] = {"run_signature": signature, "run_context": context, "seeds": {}}
         for seed in seeds:
             if all(str(seed) in results[result_name]["seeds"] for result_name in result_names):
                 print(f"[skip] {name} seed={seed}", flush=True); continue
