@@ -1,45 +1,55 @@
-# 현재 진행 상황과 Goodreads 실험 종료 판정
+# 현재 진행 상황과 최종 정리
 
-최종 확인일: 2026-07-09
+최종 갱신: 2026-07-14
 
-## 결론
+## 한 줄 결론
 
-**졸업작품의 핵심 가설을 Goodreads Children 데이터셋으로 검증하는 실험은 완료됐다고 봐도 된다.**
+Goodreads Children 기준으로 필수 실험은 완료됐다. 현재 결과는 "전체 추천 정확도 SOTA" 주장이 아니라, **LLM intent와 KG가 cold-start/long-tail 상황에서 기존 CF 모델의 약점을 보완한다**는 주장으로 정리하는 것이 가장 방어 가능하다.
 
-정확히 말하면 세상에 가능한 모든 추가 실험을 소진한 것은 아니지만, 현재 연구 질문에 필요한 주요 실험은 모두 끝났다. IKGR, DynLLM, CORONA의 구현 및 ablation, 다중 시드 평가, 희소성 k-sweep, 시간순 평가, 글로벌 시간 분할 기반 cold-start 평가까지 완료됐다. 따라서 지금부터는 새로운 장시간 GPU 실험보다 **결과 통합, 표/그림 작성, 보고서 및 발표 자료 정리**가 우선이다.
+## 최종 주장
 
-## 완료된 파이프라인
+이 파이프라인의 강점은 모든 상황에서 MF/BPR/LightGCN을 이기는 것이 아니다. 더 정확한 주장은 다음과 같다.
 
-| 구분 | 완료 내용 | 상태 |
-|---|---|---|
-| 데이터 | Goodreads Children k-core 생성 | k=100, 50, 30 완료 |
-| IKGR 입력 | LLM intent 추출, RAG 확장, 임베딩 뱅크 | 완료 |
-| IKGR | intent KG + 저자/출판사/shelf 메타 KG | 완료 |
-| DynLLM | recency 기반 동적 사용자 프로필 | 완료 |
-| CORONA | late fusion, 그래프 후보 생성, 인기 편향 제거 후보 생성 | 완료 |
-| Baseline | MF, BPR, LightGCN | 완료 |
-| 평가 | 3 seeds, TO split, long-tail, coverage | 완료 |
-| Cold-start | TO_GLOBAL split, train 이력 0명 평가 | k=50, k=30 완료 |
-| 희소성 검증 | k=100 → 50 → 30 비교 | 완료 |
+1. **IKGR**: 유저 이력이 없거나 적은 cold-start 상황에서 프로필 기반 intent와 meta-KG를 활용해 CF baseline보다 강하다.
+2. **DynLLM**: 현재 구현에서는 LLM-heavy 프로필 생성 전체가 아니라 recency 기반 동적 유저 표현이며, IKGR의 정확도와 long-tail 성능을 일부 보완한다.
+3. **CORONA**: 현재 구현에서는 overall accuracy 향상 모듈이라기보다 long-tail/diversity를 명시적으로 강화하는 trade-off 모듈이다.
 
-## 현재 확보된 핵심 결과
+따라서 최종 메시지는 다음이 적절하다.
 
-### 1. IKGR: cold-start에서 가장 강한 결과
+> IKGR은 프로필 기반 intent와 이종 KG를 통해 cold-start에서 CF 모델을 크게 앞서고, 데이터가 희소해질수록 long-tail 이점이 커진다. DynLLM의 recency 프로필은 정확도를 일부 보완하며, CORONA는 overall accuracy를 희생하는 대신 long-tail/diversity를 제어하는 모듈로 작동한다.
 
-k=30 TO_GLOBAL에서 순수 cold-start 사용자(train interaction 0명)는 2,736명이다.
+## 완료된 실험 범위
+
+| 구분 | 상태 |
+|---|---|
+| Goodreads k-core | k=100, k=50, k=30 완료 |
+| LLM intent 추출 | step1 완료 |
+| RAG intent 확장 | step2 완료 |
+| IKGR | intent-KG, meta-KG, KG-off ablation 완료 |
+| DynLLM | recency dynamic profile 완료, attention fusion은 negative |
+| CORONA | late-fusion negative, hard candidate, debiased candidate, soft-rerank 완료 |
+| Baseline | MF, BPR, LightGCN 완료 |
+| 평가 | 3 seeds, TO split, TO_GLOBAL split, cold-start, long-tail, coverage 완료 |
+| 재현성 | deterministic rerank 검증 완료 |
+
+## 핵심 결과
+
+### 1. Cold-start: IKGR의 가장 강한 결과
+
+k=30 TO_GLOBAL에서 train interaction이 0개인 순수 cold-start 유저는 2,736명이다.
 
 | 모델 | cold0 Recall@10 | cold0 NDCG@10 |
 |---|---:|---:|
 | MF | 0.0022 | 0.0140 |
 | BPR | 0.0029 | 0.0171 |
 | LightGCN | 0.0078 | 0.0475 |
-| **IKGR** | **0.0677** | **0.3867** |
+| IKGR | 0.0677 | 0.3867 |
 
-IKGR의 cold0 Recall@10은 MF 대비 약 31배, BPR 대비 약 23배, LightGCN 대비 약 8.7배다. 사용자 이력이 없어 ID 기반 CF가 제대로 학습되지 못할 때, 프로필의 intent와 메타데이터 KG가 실제로 역할을 한다는 핵심 주장이 검증됐다.
+MF/BPR/LightGCN은 유저 이력이 없으면 ID embedding을 제대로 학습할 수 없다. 반면 IKGR은 Goodreads profile에서 추출한 intent와 item metadata KG를 사용하기 때문에 cold-start 유저에게도 의미 있는 추천을 만들 수 있다.
 
-### 2. 희소할수록 long-tail 효과가 커짐
+### 2. Sparse/long-tail: 데이터가 희소할수록 KG 계열이 유리
 
-k를 100에서 50, 30으로 낮춰 데이터가 희소해질수록 IKGR 계열의 long-tail 이점이 커지는 경향이 확인됐다. k=30 TO의 tail Recall@10은 다음과 같다.
+k=30 TO split의 tail Recall@10은 다음과 같다.
 
 | 모델 | tail Recall@10 | MF 대비 |
 |---|---:|---:|
@@ -48,52 +58,52 @@ k를 100에서 50, 30으로 낮춰 데이터가 희소해질수록 IKGR 계열�
 | IKGR+DynLLM | 0.0170 | +62% |
 | CORONA cand_db | 0.0273 | +160% |
 
-이는 “intent/KG 기반 추천은 dense한 환경의 전체 정확도 경쟁보다 sparse, cold-start, long-tail 환경에서 가치가 크다”는 연구 방향을 지지한다.
+이는 intent/KG 기반 추천이 dense한 전체 정확도 경쟁보다 sparse/long-tail 상황에서 더 의미 있다는 점을 보여준다.
 
-### 3. DynLLM: 정확도 회복과 long-tail 유지
+### 3. DynLLM: recency는 도움이 되지만, LLM-heavy 구현은 아님
 
-recency 기반 동적 프로필은 IKGR의 long-tail 성능을 유지하면서 overall 정확도를 일부 회복했다. k=30 TO에서는 IKGR+DynLLM의 NDCG@10이 0.0822로 MF 0.0795와 IKGR 0.0771보다 높았고, tail Recall@10도 0.0170으로 IKGR 0.0139보다 높았다.
+현재 DynLLM 구현은 recency 기반 동적 유저 표현이다. 원 논문 또는 초기 설계처럼 리뷰, 과거 이력, intent, explicit LLM profile generation을 모두 합친 완성형은 아니다.
 
-반면 multi-head attention fusion은 tail 및 coverage를 떨어뜨려 기각했다. 이 negative result도 ablation 근거로 보존한다.
+k=30 TO에서 `IKGR+DynLLM`은 `IKGR`보다 overall NDCG와 tail Recall을 모두 개선했다. 다만 개선폭은 크지 않다. multi-head attention fusion은 tail/coverage를 떨어뜨려 기각했다.
 
-### 4. CORONA: diversity-first 트레이드오프
+정리하면 DynLLM의 현재 기여는 "LLM 프로필 생성으로 큰 성능 향상"이 아니라, **recency-aware dynamic profile이 IKGR의 약점을 일부 보완한다**는 정도다.
 
-인기 편향을 제거한 CORONA 후보 생성은 long-tail 성능을 크게 높이지만 overall NDCG를 희생한다. k=30 TO_GLOBAL에서 tail Recall@10은 0.0148로 MF의 약 7배, LightGCN의 약 16배지만 overall NDCG@10은 0.0232다.
+### 4. CORONA: accuracy 모듈이 아니라 diversity trade-off
 
-따라서 CORONA는 전체 정확도 최적화 모델이 아니라 **long-tail/diversity를 우선하는 명시적 제어 단계**로 해석하는 것이 맞다.
+`CORONA cand_db`는 long-tail 성능을 크게 올리지만 overall NDCG를 크게 낮춘다. k=30 TO_GLOBAL에서 tail Recall@10은 MF 대비 약 7배, LightGCN 대비 약 16배지만 overall NDCG@10은 낮다.
 
-## Goodreads 실험은 정말 다 끝났는가?
+soft-rerank도 추가로 검증했다. deterministic 설정을 고정한 뒤 low-lambda grid를 돌렸지만, 유의미한 accuracy-aware 개선은 없었다.
 
-### 필수 실험: 완료
+| lambda | overall NDCG@10 | tail Recall@10 | cold0 Recall@10 | cov@10 |
+|---:|---:|---:|---:|---:|
+| 0.00 | 0.1150 | 0.0038 | 0.0633 | 0.3477 |
+| 0.01 | 0.1150 | 0.0038 | 0.0633 | 0.3481 |
+| 0.03 | 0.1149 | 0.0038 | 0.0633 | 0.3491 |
+| 0.05 | 0.1147 | 0.0039 | 0.0633 | 0.3503 |
 
-- IKGR, DynLLM, CORONA 각 컴포넌트 구현 및 ablation
-- MF/BPR/LightGCN과 동일 조건 비교
-- 3개 seed를 사용한 반복 평가
-- 랜덤 분할과 시간순 TO 평가
-- k=100/50/30 희소성 sweep
-- long-tail 및 coverage 평가
-- 글로벌 시간 분할의 순수 cold-start 평가
-- 실패한 변형까지 포함한 원인 분석
+판정: soft-rerank는 재현 가능하게 검증됐지만, 성능 개선으로 채택하기 어렵다. CORONA는 현재 구조에서는 diversity/long-tail trade-off 모듈로 정리하는 것이 맞다.
 
-이 범위면 졸업작품의 핵심 주장과 컴포넌트별 기여를 설명할 근거가 충분하다. **Goodreads에서 필수로 더 돌려야 할 파이프라인은 없다.**
+## MF/BPR/LightGCN 수치가 낮아 보이는 이유
 
-### 선택적으로 남은 실험
+현재 주요 평가는 시간순 split과 global temporal split이다. 특히 TO_GLOBAL은 미래 시점에 등장하는 유저를 test에 포함하므로 cold-start가 강하게 섞인다. 아이템 수가 많고 테스트 조건이 어렵기 때문에 Recall/NDCG 절대값은 낮게 보인다.
 
-아래는 가능하지만 현재 결론을 위해 필수는 아니다.
+따라서 중요한 것은 절대값보다 같은 split, 같은 seed, 같은 데이터에서의 상대 비교다. MF/BPR/LightGCN은 추천 시스템에서 가장 기본적인 CF baseline이므로 선택했다. 이 baseline들과 비교해야 "우리 구조가 어떤 조건에서 유리한지"를 설명할 수 있다.
 
-1. CORONA Step 3 LLM 필터링: 유료이며 결과 개선이 보장되지 않는다.
-2. CORONA `pop_norm`, 후보 수 M 등의 세부 튜닝: 정확도와 long-tail 사이의 중간점을 찾을 수 있으나 추가 탐색 비용이 든다.
-3. `rating > 0`만 사용하는 데이터 정제 ablation: 현재는 Goodreads의 `to-read` 성격인 rating 0도 positive interaction으로 포함한다.
-4. 더 많은 seed 또는 epoch/hyperparameter sweep: 신뢰구간을 더 촘촘히 할 수 있지만 핵심 경향은 이미 3 seeds에서 확인됐다.
-5. 다른 데이터셋 재현: Goodreads 내부 검증이 아니라 외적 타당성을 강화하는 후속 연구에 해당한다.
+## 현재 파이프라인의 한계
 
-## 권장 다음 단계
+1. SOTA overall accuracy를 주장하기 어렵다.
+2. DynLLM은 비용과 구현 안정성 때문에 recency 중심으로 단순화되어 있다.
+3. CORONA는 현재 accuracy 향상보다 long-tail/diversity 쪽으로 작동한다.
+4. Goodreads 하나만으로 외적 타당성을 주장하기는 어렵다.
+5. soft-rerank까지 확인했지만 Full 모델이 모든 지표를 동시에 개선하지는 못했다.
 
-1. k=100/50/30 결과를 하나의 최종 비교표로 통합한다.
-2. cold-start, long-tail, overall/coverage 트레이드오프 그림을 만든다.
-3. positive result와 negative ablation을 구분해 논문/보고서 문장으로 정리한다.
-4. `AGENTS.md`, 이 문서, k=30 결과 JSON을 정리해 커밋한다.
+## 다음에 할 일
 
-현재 상태의 가장 정직한 최종 메시지는 다음과 같다.
+현재 Goodreads에서 더 긴 GPU 실험을 계속하기보다 다음 순서가 낫다.
 
-> IKGR은 프로필 기반 intent와 이종 KG를 통해 cold-start에서 CF를 크게 앞서고, 데이터가 희소해질수록 long-tail 이점이 커진다. DynLLM의 recency 프로필은 정확도를 보완하며, CORONA의 편향 제거 후보 생성은 overall 정확도를 희생하는 대신 long-tail 다양성을 명시적으로 강화한다.
+1. 이 결론을 기준으로 보고서/발표 표를 정리한다.
+2. IKGR, DynLLM, CORONA 각각의 positive/negative result를 분리해서 설명한다.
+3. 다른 데이터셋으로 외적 검증을 준비한다.
+4. 다른 데이터셋에서도 같은 프레임을 유지한다: overall accuracy만 보지 말고 cold-start, long-tail, coverage를 함께 본다.
+
+Goodreads 내부 실험은 "필수 실험 완료"로 보는 것이 맞다. 추가 실험은 결과를 뒤집기 위한 작업이 아니라, 다른 데이터셋에서 같은 경향이 재현되는지 확인하는 후속 검증이다.

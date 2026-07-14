@@ -17,7 +17,7 @@
 | 상대경로 | 실험 |
 |---|---|
 | `run_k30/slice_eval_TO_result.json` | k=30 Goodreads Children, 시간순 per-user split(TO), 최종 long-tail 실험 |
-| `run_k30/slice_eval_TO_GLOBAL_result.json` | k=30 Goodreads Children, global temporal split(TO_GLOBAL), 최종 cold-start 실험 |
+| `run_k30/slice_eval_TO_GLOBAL_result.json` | k=30 Goodreads Children, global temporal split(TO_GLOBAL), 최종 cold-start 실험 + soft-rerank low-lambda 결과 |
 | `run_k50/slice_eval_TO_result.json` | k=50 시간순 split 결과 |
 | `run_k50/slice_eval_TO_GLOBAL_result.json` | k=50 global temporal split 결과 |
 | `run/slice_eval_TO_result.json` | k=100 시간순 split에서 IKGR, DynLLM, CORONA ablation 결과 |
@@ -71,11 +71,14 @@
 | `CORONA_REPORT.md` | CORONA 실험 요약 |
 | `CORONA_INTEGRATION.md` | CORONA 통합 설계 |
 | `run/slice_eval_TO_result.json` | k=100 TO split에서 `IKGR_full`, `IKGR_cand`, `IKGR_cand_db` 결과 포함 |
+| `run_k30/slice_eval_TO_GLOBAL_result.json` | k=30 TO_GLOBAL에서 `IKGR_cand_db`, `IKGR_rerank_db_rel_l0p0/l0p01/l0p03/l0p05` 결과 포함 |
+| `run_k30/determinism_check.json` | 로컬 산출물. `IKGR_dyn` 반복 재현성과 `rerank lambda=0` 대조군 검증 결과 |
+| `run_k30/rerank_low_lambda_TO_GLOBAL.stdout.log` | soft-rerank low-lambda 3seed 실행 로그 |
 | `run/corona_full.log` | CORONA late-fusion 실험 로그 |
 | `ikgr_core/corona_retriever.py` | CORONA 그래프 후보생성 구현 |
 | `CORONA-main/` | 참고한 CORONA 원본/참조 코드 |
 
-주의: 현재 CORONA는 전체 정확도 향상보다는 diversity/long-tail 후보생성에서 효과가 나타났고, overall NDCG는 손해가 있었습니다.
+주의: 현재 CORONA는 전체 정확도 향상보다는 diversity/long-tail 후보생성에서 효과가 나타났고, overall NDCG는 손해가 있었습니다. soft-rerank는 재현성 고정 후 low-lambda까지 확인했지만 성능 개선으로 채택하기 어렵습니다.
 
 ## 6. k별 데이터/중간 산출물
 
@@ -107,6 +110,9 @@
 | `add_timestamps.py` | 기존 k-core 데이터에 timestamp backfill |
 | `make_temporal_inter.py` | timestamp 포함 RecBole inter 생성 |
 | `run_baselines.py` | Pop/BPR/LightGCN baseline 실행 |
+| `run_rerank_orchestrator.py` | soft-rerank validation/grid 자동 실행 보조 스크립트 |
+| `verify_rerank_baseline.py` | 기존 canonical 결과와 현재 `IKGR_dyn`/rerank 대조군 차이를 점검하는 보조 스크립트 |
+| `verify_deterministic_rerank.py` | canonical 결과 JSON을 건드리지 않고 deterministic 학습 및 `lambda=0` 대조군을 검증하는 스크립트 |
 | `config.yaml` | 기본 k=100 설정 |
 | `run_k50/config.k50.yaml` | k=50 실행 설정 |
 | `run_k30/config.k30.yaml` | k=30 실행 설정 |
