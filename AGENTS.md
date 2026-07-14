@@ -456,3 +456,17 @@ overall NDCG@10 (글로벌 split): **IKGR 0.120 > LightGCN 0.097 > BPR 0.090 ≈
 - **자동 실행 예약:** `run_rerank_orchestrator.py`가 validation → primary grid → 필요 시 lower-lambda fallback을 순차 실행한다. 상태/로그/최종 판단은 `run_k30/rerank_orchestrator_status.json`, `run_k30/rerank_orchestrator.log`, `run_k30/rerank_orchestrator_summary.md`에 남긴다. baseline 재현 실패 시에는 임의 GPU 재시도를 하지 않고 `blocked_baseline_mismatch`로 멈춘다.
 - **재현성 검증 결론:** 기존 `IKGR_dyn` seed 2020(0.1151), rerank lambda=0(0.1117), 현재 코드에서 재실행한 `IKGR_dyn` 2회(0.1170 / 0.1177)가 모두 약간씩 달랐다. 결과 파일의 outcome은 `blocked_training_nondeterminism`. 즉 soft-rerank 자체가 반드시 틀렸다는 뜻은 아니지만, 현재 학습 경로가 같은 seed에서도 완전 결정적이지 않아 lambda별 미세 개선/악화를 논문 결과로 채택하기 어렵다.
 - **현재 권장:** Goodreads/k=30의 확정 결과는 기존 IKGR / DynLLM(recency) / CORONA `cand_db`까지로 사용한다. soft-rerank는 추가 연구 아이디어 또는 negative/blocked 실험으로만 기록한다. 더 진행하려면 deterministic 설정(CUDA/cuDNN, DataLoader worker, negative sampling, full-sort 평가 순서)을 먼저 고정한 뒤 `lambda=0 == IKGR_dyn` 대조군부터 재검증해야 한다. LLM/API 호출은 필요 없다.
+
+### ✅ 1차 개선 — deterministic 학습/평가 고정 완료 (`fix/deterministic-rerank`)
+`eval_slices.py`의 custom training path가 RecBole quick-start와 달리 `init_seed()`를 직접 호출하지 않아, 같은 seed에서도 train shuffle/negative sampling이 흔들릴 수 있었다. 이를 보완해 `_set_determinism(seed)`를 추가했다.
+
+- 고정 항목: Python/NumPy/Torch/CUDA RNG, RecBole `init_seed(seed, reproducibility=True)`, cuDNN deterministic, benchmark off, TF32 off, `torch.use_deterministic_algorithms(..., warn_only=True)`, `CUBLAS_WORKSPACE_CONFIG`.
+- 검증 스크립트: `verify_deterministic_rerank.py` (canonical `slice_eval_TO_GLOBAL_result.json`는 수정하지 않음).
+- 검증 설정: `run_k30/config.k30.yaml`, `IKGR_SPLIT=TO_GLOBAL`, `IKGR_EPOCHS=12`, seed 2020.
+- 검증 결과 (`run_k30/determinism_check.json`, 로컬 산출물):  
+  - `IKGR_dyn` run1 = NDCG@10 0.1164 / Recall@10 0.0629 / tail@10 0.0037 / cold0@10 0.0642  
+  - `IKGR_dyn` run2 = 완전 동일 (`dyn_repeat_delta` 전부 0.0)  
+  - `IKGR_rerank_lambda_0` = 완전 동일 (`rerank_zero_delta` 전부 0.0)  
+  - outcome = `pass_deterministic_rerank_zero`
+- 의미: 이제 “재현성 때문에 soft-rerank를 해석할 수 없다”는 1차 blocker는 해소됐다. 다음 단계는 작은 lambda grid(`0.01,0.03,0.05` 등)를 3seed로 돌려, overall 손실 없이 tail/cold 이득이 있는지 확인하는 것이다.
+- 비용/시간: LLM/API 호출 없음. deterministic 설정 후 k=30 TO_GLOBAL seed 1회 학습은 약 25분, lambda=0 rerank 경로는 retriever prior 평가 때문에 wall time 약 36분.

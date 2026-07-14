@@ -15,7 +15,7 @@ Env overrides (for smoke tests):
   IKGR_EPOCHS=2              epochs override
   IKGR_SPECS=IKGR_kgon_L2,IKGR_kgoff   subset of specs
 """
-import os, json, time, math, yaml, hashlib
+import os, json, time, math, yaml, hashlib, random
 import scipy.sparse as _sp
 if not hasattr(_sp.dok_matrix, "_update"):
     _sp.dok_matrix._update = dict.update
@@ -23,13 +23,33 @@ import numpy as np
 import torch
 from recbole.config import Config
 from recbole.data import create_dataset, data_preparation
-from recbole.utils import get_model, get_trainer
+from recbole.utils import get_model, get_trainer, init_seed
 from ikgr_core.model_ikgr import IKGR as IKGRModel
 
 KS = [10, 30]
 MAXK = max(KS)
 COV_K = 10
 EVAL_SCHEMA_VERSION = 2
+
+
+def _set_determinism(seed):
+    """Reset every RNG used by this custom eval path before each training run."""
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+        torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    if hasattr(torch, "use_deterministic_algorithms"):
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    init_seed(seed, reproducibility=True)
 
 
 def _experiment_context(name, model_arg, extra, rb, paths, split):
@@ -140,6 +160,7 @@ def _blend_rerank_scores(scores, graph_prior, score_scale, lam):
 
 def _train_and_collect(model_arg, extra, rb, paths, seed):
     os.makedirs("run/recbole_slice", exist_ok=True)
+    _set_determinism(seed)
     extra = dict(extra)
     # CORONA stage-3 (3-1): candidate-set restriction and soft reranking are
     # eval-only knobs, not model parameters, so pop them before building the
