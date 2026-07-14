@@ -470,3 +470,19 @@ overall NDCG@10 (글로벌 split): **IKGR 0.120 > LightGCN 0.097 > BPR 0.090 ≈
   - outcome = `pass_deterministic_rerank_zero`
 - 의미: 이제 “재현성 때문에 soft-rerank를 해석할 수 없다”는 1차 blocker는 해소됐다. 다음 단계는 작은 lambda grid(`0.01,0.03,0.05` 등)를 3seed로 돌려, overall 손실 없이 tail/cold 이득이 있는지 확인하는 것이다.
 - 비용/시간: LLM/API 호출 없음. deterministic 설정 후 k=30 TO_GLOBAL seed 1회 학습은 약 25분, lambda=0 rerank 경로는 retriever prior 평가 때문에 wall time 약 36분.
+
+### ✅ 2차 확인 — soft rerank low-lambda grid 완료, 채택 보류
+deterministic fix 이후 `IKGR_rerank_db_rel`을 low-lambda grid로 3seed 재실행했다.
+
+- 실행 설정: `run_k30/config.k30.yaml`, `IKGR_SPLIT=TO_GLOBAL`, `IKGR_EPOCHS=12`, `IKGR_SEEDS=2020,2021,2022`, `IKGR_CORONA_RERANK_GRID=0.0,0.01,0.03,0.05`.
+- 산출물: `run_k30/slice_eval_TO_GLOBAL_result.json`의 `IKGR_rerank_db_rel_l0p0`, `l0p01`, `l0p03`, `l0p05`.
+
+| lambda | overall NDCG@10 | tail Recall@10 | cold0 Recall@10 | cov@10 |
+|---:|---:|---:|---:|---:|
+| 0.00 | 0.1150 | 0.0038 | 0.0633 | 0.3477 |
+| 0.01 | 0.1150 | 0.0038 | 0.0633 | 0.3481 |
+| 0.03 | 0.1149 | 0.0038 | 0.0633 | 0.3491 |
+| 0.05 | 0.1147 | 0.0039 | 0.0633 | 0.3503 |
+
+- 판정: low-lambda soft rerank는 `lambda=0.05`에서 tail/coverage가 아주 조금 오르지만, overall NDCG가 같이 내려가고 cold0는 변하지 않는다. 효과 크기가 3seed 변동폭보다 작아 “accuracy-aware CORONA 개선”으로 주장하기 어렵다.
+- 결론: soft-rerank는 안전하게 재현 가능해졌지만, 현재 설계에서는 채택 보류/negative로 정리하는 것이 맞다. 최종 스토리는 기존과 동일하게 IKGR=cold-start, DynLLM=recency 보완, CORONA cand_db=long-tail/diversity trade-off가 가장 방어 가능하다.
